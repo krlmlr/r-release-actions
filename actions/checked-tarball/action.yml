@@ -1,0 +1,87 @@
+name: "Checked tarball"
+description: >
+  Downloads the source tarball that a run of the check workflow built and checked for a commit,
+  and verifies it against the artifact's digest and the release it should hold,
+  with checked-tarball.sh beside this file.
+  Without `artifact-id`, finds the run and the artifact first.
+  The job needs `actions: read`.
+
+inputs:
+  sha:
+    description: "The full SHA of the commit to submit"
+    required: true
+  package:
+    description: "The package name"
+    required: true
+  version:
+    description: "The release version"
+    required: true
+  check-workflow:
+    description: "The check workflow's file name, whose run built the tarball"
+    default: "R-CMD-check.yaml"
+  run-id:
+    description: "The check run to take the tarball from; empty searches the runs on `sha`"
+    default: ""
+  artifact-id:
+    description: "The artifact, once found; with it, `run-id` and `sha256` are required and nothing is searched"
+    default: ""
+  sha256:
+    description: "With `artifact-id`: the artifact's digest"
+    default: ""
+  token:
+    description: "A token with `actions: read` on the repository"
+    required: true
+
+outputs:
+  run-id:
+    description: "The check run"
+    value: ${{ steps.find.outputs.run-id || inputs.run-id }}
+  run-url:
+    description: "The check run's URL"
+    value: ${{ steps.find.outputs.run-url }}
+  artifact-id:
+    description: "The artifact's ID"
+    value: ${{ steps.find.outputs.artifact-id || inputs.artifact-id }}
+  tarball:
+    description: "The path of the verified tarball"
+    value: ${{ steps.verify.outputs.tarball }}
+  sha256:
+    description: "The tarball's SHA-256"
+    value: ${{ steps.verify.outputs.sha256 }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: find
+      if: inputs.artifact-id == ''
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        CHECK_WORKFLOW: ${{ inputs.check-workflow }}
+        CHECK_RUN_ID: ${{ inputs.run-id }}
+        SHA: ${{ inputs.sha }}
+        PACKAGE: ${{ inputs.package }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        "$GITHUB_ACTION_PATH/checked-tarball.sh" find "$SHA" "$PACKAGE" "$VERSION"
+      shell: bash
+
+    # Fails on a digest mismatch; the verify step below checks the digest again, independently.
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ steps.find.outputs.artifact-id || inputs.artifact-id }}
+        run-id: ${{ steps.find.outputs.run-id || inputs.run-id }}
+        github-token: ${{ inputs.token }}
+        path: ${{ runner.temp }}/checked-tarball
+        digest-mismatch: error
+
+    - id: verify
+      env:
+        SHA256: ${{ steps.find.outputs.sha256 || inputs.sha256 }}
+        PACKAGE: ${{ inputs.package }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        name="${PACKAGE}_${VERSION}.tar.gz"
+        tarball="$(find "$RUNNER_TEMP/checked-tarball" -type f -name "$name" | head -n 1)"
+        "$GITHUB_ACTION_PATH/checked-tarball.sh" verify "${tarball:-$RUNNER_TEMP/checked-tarball/$name}" "$SHA256" "$PACKAGE" "$VERSION"
+      shell: bash

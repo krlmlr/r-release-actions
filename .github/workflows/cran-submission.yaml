@@ -1,0 +1,256 @@
+# Submits an R package to CRAN: the tarball its check workflow built and checked, never one built here.
+# A package calls it from a workflow it dispatches by hand, on the release branch or, on the fast path, on `main`;
+# the README describes the inputs, the permissions the caller grants, and what the run reads and writes.
+#
+# Jobs, in order, each with only the permissions it needs:
+#   version  stops on a fork, a development version or dates that are not the submission date,
+#            and finds the checklist pull request (a real run fails without one)
+#   tarball  finds the check run of the commit and its tarball artifact, downloads and verifies it,
+#            and refuses while CRAN's incoming queue holds a submission of the package
+#   draft    creates or updates the version's draft release with the tarball attached; writes no tag
+#   upload   posts the tarball to CRAN's form in its two steps, without a token that can write
+#   report   updates the workflow's comment on the checklist pull request,
+#            and records a real run's attempt in a new comment there
+# A dry run does all of the reading and checking, and writes and sends nothing.
+
+name: CRAN submission
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: "The full SHA of the commit to submit, usually the dispatched branch's head (`github.sha`)"
+        required: true
+        type: string
+      dry-run:
+        description: "Check and report everything, but write no release, send nothing to CRAN, and record no attempt"
+        required: true
+        type: boolean
+      check-workflow:
+        description: "The file name of the check workflow whose run built the tarball"
+        required: false
+        type: string
+        default: R-CMD-check.yaml
+      check-run-id:
+        description: "The check run to take the tarball from; empty takes the newest run on `sha` that holds it"
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+# One submission per package at a time, never cancelled: two runs could otherwise both draft the release.
+concurrency:
+  group: cran-submission-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check the version and the dates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      package: ${{ steps.version.outputs.package }}
+      version: ${{ steps.version.outputs.version }}
+      pr: ${{ steps.checklist.outputs.pr }}
+    steps:
+      - name: Refuse a fork and a SHA that is not one
+        env:
+          FORK: ${{ github.event.repository.fork }}
+          SHA: ${{ inputs.sha }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if [ "$FORK" = true ]; then
+            echo "::error title=Fork::$GITHUB_REPOSITORY is a fork; submit from the package's own repository."
+            exit 1
+          fi
+          if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=No full commit SHA::The input sha is '$SHA', not a full 40-character commit SHA."
+            exit 1
+          fi
+          if [ "$DRY_RUN" = true ]; then
+            echo "::notice title=Dry run::Nothing is drafted, sent to CRAN, or recorded in this run."
+            printf '> [!NOTE]\n> **Dry run:** nothing is drafted, sent to CRAN, or recorded.\n\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            DESCRIPTION
+            NEWS.md
+          sparse-checkout-cone-mode: false
+
+      - name: Read the version and verify the dates
+        id: version
+        uses: krlmlr/r-release-actions/actions/release-version@main
+        with:
+          dry-run: ${{ inputs.dry-run }}
+
+      - name: Find the checklist pull request
+        id: checklist
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: find
+          package: ${{ steps.version.outputs.package }}
+          version: ${{ steps.version.outputs.version }}
+          require: ${{ !inputs.dry-run }}
+          token: ${{ github.token }}
+
+  tarball:
+    name: Fetch the checked tarball
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+    outputs:
+      run-id: ${{ steps.tarball.outputs.run-id }}
+      run-url: ${{ steps.tarball.outputs.run-url }}
+      artifact-id: ${{ steps.tarball.outputs.artifact-id }}
+      sha256: ${{ steps.tarball.outputs.sha256 }}
+    steps:
+      - name: Find, download and verify the tarball
+        id: tarball
+        uses: krlmlr/r-release-actions/actions/checked-tarball@main
+        with:
+          sha: ${{ inputs.sha }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          check-workflow: ${{ inputs.check-workflow }}
+          run-id: ${{ inputs.check-run-id }}
+          token: ${{ github.token }}
+
+      - name: Refuse while CRAN's incoming queue holds the package
+        uses: krlmlr/r-release-actions/actions/cran-incoming@main
+        with:
+          package: ${{ needs.version.outputs.package }}
+          dry-run: ${{ inputs.dry-run }}
+
+  # The only job that can write, and it neither builds nor uploads.
+  draft:
+    name: Draft the release
+    needs: [version, tarball]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      release-url: ${{ steps.draft.outputs.release-url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            DESCRIPTION
+            NEWS.md
+          sparse-checkout-cone-mode: false
+
+      - name: Write the release notes
+        id: version
+        uses: krlmlr/r-release-actions/actions/release-version@main
+        with:
+          dry-run: ${{ inputs.dry-run }}
+
+      - name: Download and verify the tarball
+        id: tarball
+        uses: krlmlr/r-release-actions/actions/checked-tarball@main
+        with:
+          sha: ${{ inputs.sha }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          run-id: ${{ needs.tarball.outputs.run-id }}
+          artifact-id: ${{ needs.tarball.outputs.artifact-id }}
+          sha256: ${{ needs.tarball.outputs.sha256 }}
+          token: ${{ github.token }}
+
+      - name: Create or update the draft release, or show it on a dry run
+        id: draft
+        uses: krlmlr/r-release-actions/actions/cran-draft@main
+        with:
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          sha: ${{ inputs.sha }}
+          notes: ${{ steps.version.outputs.notes }}
+          tarball: ${{ steps.tarball.outputs.tarball }}
+          dry-run: ${{ inputs.dry-run }}
+          token: ${{ github.token }}
+
+  upload:
+    name: Upload to CRAN
+    needs: [version, tarball, draft]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+    steps:
+      - name: Download and verify the tarball
+        id: tarball
+        uses: krlmlr/r-release-actions/actions/checked-tarball@main
+        with:
+          sha: ${{ inputs.sha }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          run-id: ${{ needs.tarball.outputs.run-id }}
+          artifact-id: ${{ needs.tarball.outputs.artifact-id }}
+          sha256: ${{ needs.tarball.outputs.sha256 }}
+          token: ${{ github.token }}
+
+      - name: Upload and confirm the submission, or show what would be sent
+        uses: krlmlr/r-release-actions/actions/cran-submit@main
+        with:
+          tarball: ${{ steps.tarball.outputs.tarball }}
+          sha: ${{ inputs.sha }}
+          dry-run: ${{ inputs.dry-run }}
+
+  report:
+    name: Report to the checklist pull request
+    needs: [version, tarball, draft, upload]
+    if: always() && needs.version.outputs.pr != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # First, so that a failure to update the status comment cannot lose the record of an attempt.
+      - name: Record the attempt in a new comment
+        if: ${{ !inputs.dry-run && needs.upload.result == 'success' }}
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: attempt
+          pr: ${{ needs.version.outputs.pr }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          sha: ${{ inputs.sha }}
+          sha256: ${{ needs.tarball.outputs.sha256 }}
+          tarball-name: ${{ needs.version.outputs.package }}_${{ needs.version.outputs.version }}.tar.gz
+          draft-url: ${{ needs.draft.outputs.release-url }}
+          token: ${{ github.token }}
+
+      - name: Update the workflow's comment
+        if: always()
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: status
+          pr: ${{ needs.version.outputs.pr }}
+          key: cran-submission
+          title: CRAN submission
+          results: |
+            version=${{ needs.version.result }}
+            tarball=${{ needs.tarball.result }}
+            draft=${{ needs.draft.result }}
+            upload=${{ needs.upload.result }}
+          details: |
+            ${{ inputs.dry-run && '**Dry run:** nothing was drafted, sent to CRAN, or recorded.' || '**Real run.**' }}
+
+            - Commit: ${{ inputs.sha }}
+            - Tarball: ${{ needs.tarball.outputs.sha256 && format('SHA-256 `{0}`', needs.tarball.outputs.sha256) || 'none found' }}
+            - Check run: ${{ needs.tarball.outputs.run-url || 'none found' }}
+            - Draft release: ${{ needs.draft.outputs.release-url || 'none' }}
+          token: ${{ github.token }}

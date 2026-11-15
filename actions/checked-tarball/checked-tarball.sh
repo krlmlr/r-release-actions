@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
+# Find the source tarball a check run built for a commit, and verify the downloaded file.
+#
+# The submission builds nothing: it uploads the file the check workflow built and checked.
+# That workflow keeps the file as a raw (unzipped) artifact named `<package>_<version>.tar.gz`,
+# uploaded with `actions/upload-artifact` and `archive: false`, so that the artifact's digest is the file's SHA-256.
+#
+#   find <sha> <package> <version>
+#     The run is CHECK_RUN_ID when set, and must have been made on <sha>;
+#     otherwise the newest run of the workflow CHECK_WORKFLOW made on <sha> that holds the artifact.
+#     Writes `run-id`, `run-url`, `artifact-id` and `sha256` (from the artifact's digest) to GITHUB_OUTPUT.
+#     A run whose conclusion is not success is reported with a warning:
+#     the session confirms a green build before it dispatches, and the submission reads no check results.
+#   verify <tarball> <sha256> <package> <version>
+#     The file's SHA-256 is the artifact's digest, it is a gzip-compressed tar archive,
+#     its name is `<package>_<version>.tar.gz`, and its DESCRIPTION names that package and version.
+#     Writes `tarball` and `sha256` to GITHUB_OUTPUT.
+#
+# Environment:
+#   GH_REPO          owner/name of the package's repository; GH_TOKEN a token with `actions: read`
+#   GH               the gh command, default `gh`; checked-tarball-test.sh stubs it
+#   CHECK_WORKFLOW   the check workflow's file name, default R-CMD-check.yaml
+#   CHECK_RUN_ID     a run to take the tarball from, instead of searching
+#   GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, GITHUB_ACTIONS, GITHUB_SERVER_URL
+#
+# Exit status: 0 on success, 1 on a failed check, 2 on a usage error.
+
+set -euo pipefail
+
+# shellcheck source=../cran-lib/cran-lib.sh
+. "$(dirname "$0")/../cran-lib/cran-lib.sh"
+
+usage() {
+  sed -n '3,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+gh=${GH:-gh}
+
+cmd_find() {
+  [ $# -eq 3 ] || usage
+  local sha=$1 pkg=$2 version=$3
+  local repo=${GH_REPO:?} workflow=${CHECK_WORKFLOW:-R-CMD-check.yaml} run_id=${CHECK_RUN_ID:-}
+  valid_sha "$sha" || fail "Tarball" "No full commit SHA" "\`$sha\` is no full 40-character commit SHA." -- \
+    "Pass the full SHA of the commit to submit, such as \`\${{ github.sha }}\`."
+  { valid_package "$pkg" && valid_version "$version"; } || usage
+  local name="${pkg}_${version}.tar.gz"
+  [[ $workflow =~ ^[A-Za-z0-9._-]+$ ]] || fail "Tarball" "No valid workflow name" "\`$workflow\` is no workflow file name." -- \
+    "Pass the check workflow's file name, such as \`R-CMD-check.yaml\`."
+
+  summary "## Checked tarball" ""
+  group "Tarball: the check run of $(printf '%s' "${sha:0:10}")"
+  val "commit" "$sha"
+  val "artifact" "$name"
+  local runs
+  if [ -n "$run_id" ]; then
+    [[ $run_id =~ ^[0-9]+$ ]] || fail "Tarball" "No valid run ID" "\`$run_id\` is no workflow run ID." -- \
+      "Pass the numeric ID of the check run, from its URL, or leave it empty to search."
+    val "run (given)" "$run_id"
+    local head
+    head=$("$gh" api "repos/$repo/actions/runs/$run_id" --jq .head_sha) ||
+      fail "Tarball" "The check run cannot be read" "The run $run_id cannot be read from $repo." -- \
+        "Check the run ID, and that the job holds \`actions: read\`."
+    [ "$head" = "$sha" ] ||
+      fail "Tarball" "The check run is of another commit" "The run $run_id checked \`$head\`, not \`$sha\`, the commit to submit." -- \
+        "Pass the run that checked the commit to submit, or leave the run ID empty to search for it."
+    runs=$run_id
+  else
+    val "workflow" "$workflow"
+    runs=$("$gh" api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" \
+      --jq '.workflow_runs | sort_by(.created_at) | reverse | .[].id') ||
+      fail "Tarball" "The check runs cannot be read" "The runs of \`$workflow\` cannot be read from $repo." -- \
+        "Check that \`$workflow\` is the check workflow's file name, and that the job holds \`actions: read\`."
+  fi
+
+  local r found='' artifact=''
+  for r in $runs; do
+    artifact=$("$gh" api "repos/$repo/actions/runs/$r/artifacts?name=$name&per_page=100" \
+      --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | select(. != null) | "\(.id) \(.digest // "")"')
+    if [ -n "$artifact" ]; then
+      found=$r
+      break
+    fi
+  done
+  [ -n "$found" ] ||
+    fail "Tarball" "No checked tarball" \
+      "No ${run_id:+given }run of \`$workflow\` on \`${sha:0:10}\` holds an unexpired artifact \`$name\`." -- \
+      "Dispatch the check workflow on this commit, wait until it is green, and dispatch the submission again." \
+      "An artifact expires after at most 90 days: a commit checked that long ago is checked again."
+  local artifact_id=${artifact%% *} digest=${artifact#* }
+  local sha256=${digest#sha256:}
+  [[ $sha256 =~ ^[0-9a-f]{64}$ ]] ||
+    fail "Tarball" "The artifact has no SHA-256 digest" "The artifact $artifact_id of run $found has the digest \`$digest\`." -- \
+      "The check workflow uploads the tarball with \`actions/upload-artifact\` v7 or later and \`archive: false\`, which records the file's SHA-256."
+  local conclusion run_url
+  conclusion=$("$gh" api "repos/$repo/actions/runs/$found" --jq '"\(.status) \(.conclusion // "")"')
+  run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/$found
+  val "run" "$found ($conclusion)"
+  val "artifact id" "$artifact_id"
+  val "sha256" "$sha256"
+  endgroup
+  if [ "$conclusion" != "completed success" ]; then
+    warn "Check run not green" "The run $found that built $name is '$conclusion'; the submission reads no check results, so confirm that the checks of this commit are green."
+  fi
+  summary "- Check run: [$found]($run_url), $conclusion" "- Artifact: \`$name\`, id $artifact_id, sha256 \`$sha256\`" ""
+  output run-id "$found" run-url "$run_url" artifact-id "$artifact_id" sha256 "$sha256"
+}
+
+cmd_verify() {
+  [ $# -eq 4 ] || usage
+  local tarball=$1 expected=$2 pkg=$3 version=$4
+  local work base actual
+  work=$(mktemp -d)
+  # shellcheck disable=SC2064  # expand now
+  trap "rm -rf '$work'" EXIT
+  base=$(basename "$tarball")
+  group "Verify: $base"
+  [ -f "$tarball" ] || fail "Verify" "No tarball downloaded" "The download left no \`$base\`." -- \
+    "The check workflow uploads the tarball as a raw file with \`archive: false\`, named \`${pkg}_${version}.tar.gz\`."
+  actual=$(sha256_of "$tarball")
+  val "sha256" "$actual"
+  val "digest" "$expected"
+  [ "$actual" = "$expected" ] ||
+    fail "Verify" "The tarball is not the checked one" "The downloaded file's SHA-256 is \`$actual\`, and the artifact's digest is \`$expected\`. Nothing was drafted or uploaded." -- \
+      "Dispatch the submission again; if this persists, dispatch the check workflow on the commit again."
+  [ "$base" = "${pkg}_${version}.tar.gz" ] ||
+    fail "Verify" "The tarball is misnamed" "The checked tarball is \`$base\`, and the release is \`${pkg}_${version}.tar.gz\`." -- \
+      "The check workflow keeps the file under the name \`R CMD build\` gave it."
+  if ! gzip -t "$tarball" 2>"$work/err" || ! tar -tzf "$tarball" >"$work/listing" 2>>"$work/err"; then
+    fail "Verify" "The tarball cannot be read" "\`$base\` is no gzip-compressed tar archive." "$work/err" -- \
+      "Check the artifact the check workflow uploaded."
+  fi
+  tar -xzOf "$tarball" "$pkg/DESCRIPTION" >"$work/DESCRIPTION" 2>"$work/err" ||
+    fail "Verify" "The tarball has no DESCRIPTION" "\`$base\` holds no \`$pkg/DESCRIPTION\`." "$work/err" -- \
+      "Check the artifact the check workflow uploaded."
+  local tp tv
+  tp=$(dcf_field Package "$work/DESCRIPTION")
+  tv=$(dcf_field Version "$work/DESCRIPTION")
+  { [ "$tp" = "$pkg" ] && [ "$tv" = "$version" ]; } ||
+    fail "Verify" "The tarball is of another release" "\`$base\` holds $tp $tv, and the commit describes $pkg $version." -- \
+      "Dispatch the check workflow on the commit to submit, and the submission after it."
+  endgroup
+  summary "- Verified: \`$base\` has the artifact's SHA-256 and holds $pkg $version." ""
+  output tarball "$tarball" sha256 "$actual"
+}
+
+case "${1:-}" in
+  find) shift; cmd_find "$@" ;;
+  verify) shift; cmd_verify "$@" ;;
+  *) usage ;;
+esac

@@ -1,0 +1,87 @@
+# Adapted from krlmlr/duckplyr's .github/actions/release-report/action.yml at f98ad13 (MIT).
+name: "Release report"
+description: >
+  Finds the release's checklist pull request by its marker (mode `find`),
+  keeps the workflow's one comment there, updated in place (mode `status`),
+  or records a submission attempt in a new comment (mode `attempt`),
+  with release-report.sh beside this file.
+  The job needs `pull-requests: read` for `find`, and `pull-requests: write` otherwise.
+
+inputs:
+  mode:
+    description: "`find`, `status` or `attempt`"
+    required: true
+  token:
+    description: "A token with the permission the mode needs"
+    required: true
+  pr:
+    description: "`status`, `attempt`: the checklist pull request's number"
+    default: ""
+  package:
+    description: "`find`, `attempt`: the package name"
+    default: ""
+  version:
+    description: "`find`, `attempt`: the release version"
+    default: ""
+  require:
+    description: "`find`: `true` fails without exactly one checklist pull request"
+    default: "false"
+  key:
+    description: "`status`: identifies the workflow's comment"
+    default: ""
+  title:
+    description: "`status`: the comment's heading"
+    default: ""
+  results:
+    description: "`status`: one `<job>=<result>` per line"
+    default: ""
+  details:
+    description: "`status`: Markdown appended below the job results"
+    default: ""
+  sha:
+    description: "`attempt`: the full SHA of the submitted commit"
+    default: ""
+  sha256:
+    description: "`attempt`: the tarball's SHA-256"
+    default: ""
+  tarball-name:
+    description: "`attempt`: the tarball's file name"
+    default: ""
+  draft-url:
+    description: "`attempt`: the draft release's URL"
+    default: ""
+
+outputs:
+  pr:
+    description: "`find`: the checklist pull request's number, or empty"
+    value: ${{ steps.run.outputs.pr }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: run
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        MODE: ${{ inputs.mode }}
+        PR: ${{ inputs.pr }}
+        PACKAGE: ${{ inputs.package }}
+        VERSION: ${{ inputs.version }}
+        REQUIRE: ${{ inputs.require }}
+        KEY: ${{ inputs.key }}
+        TITLE: ${{ inputs.title }}
+        RESULTS: ${{ inputs.results }}
+        DETAILS: ${{ inputs.details }}
+        SHA: ${{ inputs.sha }}
+        SHA256: ${{ inputs.sha256 }}
+        TARBALL_NAME: ${{ inputs.tarball-name }}
+        DRAFT_URL: ${{ inputs.draft-url }}
+      run: |
+        script="$GITHUB_ACTION_PATH/release-report.sh"
+        case "$MODE" in
+          find) "$script" find "$PACKAGE" "$VERSION" ;;
+          status) "$script" status "$PR" "$KEY" "$TITLE" ;;
+          attempt) "$script" attempt "$PR" "$PACKAGE" "$VERSION" "$SHA" "$SHA256" "$TARBALL_NAME" ;;
+          *) echo "::error::Unknown mode: $MODE"; exit 2 ;;
+        esac
+      shell: bash

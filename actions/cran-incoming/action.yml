@@ -1,0 +1,22 @@
+name: "CRAN incoming queue"
+description: >
+  Fails while CRAN's incoming queue holds a submission of the package, and warns on a dry run,
+  with cran-incoming.sh beside this file.
+
+inputs:
+  package:
+    description: "The package name"
+    required: true
+  dry-run:
+    description: "`true` turns a queued submission into a warning"
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - env:
+        PACKAGE: ${{ inputs.package }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        "$GITHUB_ACTION_PATH/cran-incoming.sh" "$PACKAGE"
+      shell: bash

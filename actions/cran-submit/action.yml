@@ -1,0 +1,32 @@
+# Adapted from duckdb/duckdb-r's scripts/cran-submit.sh at ca768a9 (MIT).
+name: "CRAN upload"
+description: >
+  Uploads a source tarball to CRAN's submission form and confirms it, as devtools:::upload_cran() does,
+  or, on a dry run, reports every field it would send,
+  with cran-submit.sh beside this file.
+
+inputs:
+  tarball:
+    description: "The tarball to upload, named `<package>_<version>.tar.gz`"
+    required: true
+  sha:
+    description: "The commit the tarball was built from, named in the report"
+    default: ""
+  dry-run:
+    description: "`true` sends nothing and reports what would be sent"
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - env:
+        TARBALL: ${{ inputs.tarball }}
+        SUBMIT_SHA: ${{ inputs.sha }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        if [ "$DRY_RUN" = true ]; then
+          "$GITHUB_ACTION_PATH/cran-submit.sh" upload --dry-run "$TARBALL"
+        else
+          "$GITHUB_ACTION_PATH/cran-submit.sh" upload "$TARBALL"
+        fi
+      shell: bash

@@ -1,0 +1,8 @@
+# The reusable workflows call this repository's own actions by ref, because a workflow cannot pin a SHA of the commit it is in.
+# Every other action stays pinned by full SHA.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "krlmlr/r-release-actions/*": ref-pin
+        "*": hash-pin
