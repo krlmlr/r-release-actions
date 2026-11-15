@@ -42,6 +42,13 @@ usage() {
 
 gh=${GH:-gh}
 
+# `gh api` with its error kept: a failed call fails the stage with GitHub's message,
+# so that only an empty answer to a successful call reads as "nothing found".
+apierr=$(mktemp)
+trap 'rm -f "$apierr"' EXIT
+api() { "$gh" api "$@" 2>"$apierr"; }
+api_error() { head -n 1 "$apierr"; }
+
 cmd_find() {
   [ $# -eq 3 ] || usage
   local sha=$1 pkg=$2 version=$3
@@ -68,10 +75,12 @@ cmd_find() {
       "Pass the numeric ID of the check run, from its URL, or leave it empty to search."
     val "run (given)" "$run_id"
     local given
-    given=$("$gh" api "repos/$repo/actions/runs/$run_id" --jq '"\(.event) \(.head_repository.full_name) \(.head_sha)"') ||
-      fail "Tarball" "The check run cannot be read" "The run $run_id cannot be read from $repo." -- \
+    given=$(api "repos/$repo/actions/runs/$run_id" --jq '"\(.event) \(.head_repository.full_name) \(.head_sha)"') ||
+      fail "Tarball" "The check run cannot be read" "The run $run_id cannot be read from $repo: $(api_error)." -- \
         "Check the run ID, and that the job holds \`actions: read\`."
-    runs=$("$gh" api "repos/$repo/actions/runs/$run_id" --jq "$accept | .id")
+    runs=$(api "repos/$repo/actions/runs/$run_id" --jq "$accept | .id") ||
+      fail "Tarball" "The check run cannot be read" "The run $run_id cannot be read from $repo: $(api_error)." -- \
+        "Check the run ID, and that the job holds \`actions: read\`."
     local what
     what="The run $run_id is a \`${given%% *}\` run of \`$(cut -d' ' -f3 <<<"$given")\` in $(cut -d' ' -f2 <<<"$given")"
     [ -n "$runs" ] ||
@@ -79,17 +88,18 @@ cmd_find() {
         "Pass a push or dispatch run of the commit to submit on this repository, or leave the run ID empty to search for it."
   else
     val "workflow" "$workflow"
-    runs=$("$gh" api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" \
+    runs=$(api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" \
       --jq "[.workflow_runs[] | $accept] | sort_by(.created_at) | reverse | .[].id") ||
-      fail "Tarball" "The check runs cannot be read" "The runs of \`$workflow\` cannot be read from $repo." -- \
+      fail "Tarball" "The check runs cannot be read" "The runs of \`$workflow\` cannot be read from $repo: $(api_error)." -- \
         "Check that \`$workflow\` is the check workflow's file name, and that the job holds \`actions: read\`."
   fi
 
   local r found='' artifact=''
   for r in $runs; do
-    artifact=$("$gh" api "repos/$repo/actions/runs/$r/artifacts?name=$name&per_page=100" \
+    artifact=$(api "repos/$repo/actions/runs/$r/artifacts?name=$name&per_page=100" \
       --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | select(. != null) | "\(.id) \(.digest // "")"') ||
-      artifact=''
+      fail "Tarball" "The artifacts cannot be read" "The artifacts of the run $r cannot be read from $repo: $(api_error)." -- \
+        "Check that the job holds \`actions: read\`, then dispatch the submission again."
     if [ -n "$artifact" ]; then
       found=$r
       break
@@ -106,7 +116,9 @@ cmd_find() {
     fail "Tarball" "The artifact has no SHA-256 digest" "The artifact $artifact_id of run $found has the digest \`$digest\`." -- \
       "The check workflow uploads the tarball with \`actions/upload-artifact\` v7 or later and \`archive: false\`, which records the file's SHA-256."
   local conclusion run_url
-  conclusion=$("$gh" api "repos/$repo/actions/runs/$found" --jq '"\(.status) \(.conclusion // "")"')
+  conclusion=$(api "repos/$repo/actions/runs/$found" --jq '"\(.status) \(.conclusion // "")"') ||
+    fail "Tarball" "The check run cannot be read" "The run $found cannot be read from $repo: $(api_error)." -- \
+      "Check that the job holds \`actions: read\`, then dispatch the submission again."
   run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/$found
   val "run" "$found ($conclusion)"
   val "artifact id" "$artifact_id"
@@ -125,7 +137,10 @@ cmd_commit() {
   { valid_sha "$sha" && valid_repo "$repo"; } || usage
   # GitHub resolves a commit of any fork in the repository's network, so resolving it proves nothing;
   # a branch of this repository whose head it is does.
-  branches=$("$gh" api "repos/$repo/commits/$sha/branches-where-head" --jq '.[].name' 2>/dev/null | paste -s -d ' ' -) || branches=''
+  branches=$(api "repos/$repo/commits/$sha/branches-where-head" --jq '.[].name') ||
+    fail "Commit" "The commit's branches cannot be read" "Asking $repo which branches \`$sha\` heads failed: $(api_error)." -- \
+      "Check that the job holds \`contents: read\` and that \`sha\` is a commit of $repo, then dispatch the submission again."
+  branches=$(printf '%s\n' "$branches" | paste -s -d ' ' -)
   [ -n "$branches" ] ||
     fail "Commit" "The commit is no branch head" \
       "\`$sha\` is the head of no branch of $repo, so it may be a fork's commit or one a later push superseded. Nothing was drafted or uploaded." -- \
@@ -141,7 +156,7 @@ cmd_verify() {
   local work base actual
   work=$(mktemp -d)
   # shellcheck disable=SC2064  # expand now
-  trap "rm -rf '$work'" EXIT
+  trap "rm -rf '$work' '$apierr'" EXIT
   base=$(basename "$tarball")
   group "Verify: $base"
   [ -f "$tarball" ] || fail "Verify" "No tarball downloaded" "The download left no \`$base\`." -- \

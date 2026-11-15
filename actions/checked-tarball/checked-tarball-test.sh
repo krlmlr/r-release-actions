@@ -86,9 +86,14 @@ has "that is no number fails" "$out" "::error title=No valid run ID::"
 
 section "no checked tarball"
 out=$(run find "$OTHER" fakepkg 1.0.1)
-has "a commit without check runs fails" "$out" "::error title=The check runs cannot be read::"
+has "check runs that cannot be read fail, with GitHub's error" "$out" "::error title=The check runs cannot be read::"
+has "naming it" "$out" "gh: Not Found (HTTP 404)"
 answer "repos/owner/fakepkg/actions/workflows/R-CMD-check.yaml/runs?head_sha=$OTHER&per_page=100" \
   "{\"workflow_runs\": [$(runj 21 2026-11-15T10:00:00Z push owner/fakepkg "$OTHER" success)]}"
+out=$(run find "$OTHER" fakepkg 1.0.1)
+has "artifacts that cannot be read fail, with GitHub's error" "$out" \
+  "::error title=The artifacts cannot be read::The artifacts of the run 21 cannot be read from owner/fakepkg: gh: Not Found (HTTP 404)."
+answer "repos/owner/fakepkg/actions/runs/21/artifacts?name=$NAME&per_page=100" '{"artifacts": []}'
 out=$(run find "$OTHER" fakepkg 1.0.1)
 has "a commit whose runs hold no tarball fails" "$out" "::error title=No checked tarball::"
 has "saying to dispatch the check" "$(cat "$SUMMARY")" "Dispatch the check workflow on this commit"
@@ -114,7 +119,9 @@ answer "repos/owner/fakepkg/commits/$OTHER/branches-where-head" '[]'
 out=$(run commit "$OTHER")
 has "a commit that heads no branch, a fork's or a superseded one, fails" "$out" "::error title=The commit is no branch head::"
 out=$(run commit 89abcdef0123456789abcdef0123456789abcde0)
-has "as does one GitHub cannot answer for" "$out" "::error title=The commit is no branch head::"
+has "a failed call is no empty answer: it fails with GitHub's error" "$out" \
+  "::error title=The commit's branches cannot be read::Asking owner/fakepkg which branches"
+has "naming it" "$out" "gh: Not Found (HTTP 404)"
 
 section "verify"
 mkdir -p "$SCRATCH/pkg/fakepkg" "$SCRATCH/dl"
