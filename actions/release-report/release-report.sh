@@ -69,29 +69,39 @@ cmd_find() {
     fail "Checklist" "The open pull requests cannot be read" "Listing the open pull requests of $repo failed: $(head -n 1 "$errf")." -- \
       "Check that the calling job grants \`pull-requests: read\`, then dispatch the submission again."
   # The author needs write access, read from `collaborators/<login>/permission` (admin, maintain and write read as
-  # `admin` or `write`). Where the token cannot read it, a real run (REQUIRE) fails with GitHub's error;
-  # a dry run warns and lets the author's association with the repository stand in: owner, member or collaborator.
+  # `admin` or `write`). That endpoint answers 404 for an App's bot account and may for someone outside the repository,
+  # so an unreadable permission falls back to the author's association with the repository:
+  # anyone but an owner, member or collaborator is ignored with a warning, as a stray marker must not block a release;
+  # an owner, member or collaborator whose access cannot be verified fails a real run with GitHub's error,
+  # and a dry run warns and accepts them.
   local number assoc login perm trusted='' others=''
   while IFS=$'\t' read -r number assoc login; do
     [ -n "$number" ] || continue
-    if [[ $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] &&
-      perm=$("$gh" api "repos/$repo/collaborators/$login/permission" --jq .permission 2>"$errf"); then
+    if [[ $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]]; then
+      perm=$("$gh" api "repos/$repo/collaborators/$login/permission" --jq .permission 2>"$errf") || perm=''
+    else
+      perm=''
+      echo "the login is not a GitHub login" >"$errf"
+    fi
+    if [ -n "$perm" ]; then
       case "$perm" in
         admin | write) trusted+="$number"$'\n' ;;
         *) others+="#$number by $login ($perm access) " ;;
       esac
-    else
-      [ "${REQUIRE:-false}" != true ] ||
-        fail "Checklist" "The access of the checklist pull request's author cannot be read" \
-          "Reading the access of $login, who opened #$number, failed: $(head -n 1 "$errf"). Nothing was drafted or uploaded." -- \
-          "Check that the calling job's token can read \`repos/$repo/collaborators/$login/permission\`, then dispatch the submission again."
-      warn "Permission unknown" \
-        "The access of $login, who opened #$number, cannot be read; their association with the repository, $assoc, decides."
-      case "$assoc" in
-        OWNER | MEMBER | COLLABORATOR) trusted+="$number"$'\n' ;;
-        *) others+="#$number by $login ($assoc) " ;;
-      esac
+      continue
     fi
+    case "$assoc" in
+      OWNER | MEMBER | COLLABORATOR)
+        [ "${REQUIRE:-false}" != true ] ||
+          fail "Checklist" "The access of the checklist pull request's author cannot be read" \
+            "Reading the access of $login ($assoc), who opened #$number, failed: $(head -n 1 "$errf"). Nothing was drafted or uploaded." -- \
+            "Check that the calling job's token can read \`repos/$repo/collaborators/$login/permission\`, then dispatch the submission again."
+        warn "Permission unknown" \
+          "The access of $login, who opened #$number, cannot be read ($(head -n 1 "$errf")); as $assoc they are accepted on a dry run, and a real run fails."
+        trusted+="$number"$'\n'
+        ;;
+      *) others+="#$number by $login ($assoc, access unreadable) " ;;
+    esac
   done <<<"$found"
   trusted=${trusted%$'\n'}
   [ -z "$others" ] ||

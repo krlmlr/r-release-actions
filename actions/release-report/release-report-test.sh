@@ -56,11 +56,18 @@ hasnt "the association does not decide where the permission is known" "$out" "Pe
 answer "$PULLS" "[$(pull 5 MEMBER member "$MARK"), $(pull 6 NONE nobody "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
 has "where the permission cannot be read, a real run fails with GitHub's error" "$out" \
-  "::error title=The access of the checklist pull request's author cannot be read::Reading the access of member, who opened #5, failed: gh: Not Found (HTTP 404)."
+  "::error title=The access of the checklist pull request's author cannot be read::Reading the access of member (MEMBER), who opened #5, failed: gh: Not Found (HTTP 404)."
 out=$(run find fakepkg 1.0.1)
 has "a dry run lets a member's stand in" "$(cat "$SCRATCH/output")" "pr=5"
 has "with a warning" "$out" "::warning title=Permission unknown::The access of member"
-has "and someone else's is ignored" "$out" "Ignored #6 by nobody (NONE)"
+has "and someone else's is ignored" "$out" "Ignored #6 by nobody (NONE, access unreadable)"
+# A stray marker by an App's bot or an outsider, whose access the endpoint does not answer, must not block the release.
+answer "$PULLS" "[$(pull 3 NONE 'dependabot[bot]' "$MARK"), $(pull 2 CONTRIBUTOR outsider "$MARK"), $(pull 7 NONE maint "$MARK")]"
+out=$(REQUIRE=true run find fakepkg 1.0.1)
+has "stray marker pull requests whose author's access is unreadable do not block a real run" "$out" "exit 0"
+is "which takes the valid checklist pull request" "$(cat "$SCRATCH/output")" "pr=7"
+has "naming the bot's in the warning" "$out" "#3 by dependabot[bot] (NONE, access unreadable)"
+has "and the outsider's" "$out" "#2 by outsider (CONTRIBUTOR, access unreadable)"
 answer "$PULLS" "[$(pull 4 MEMBER stranger "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
 has "only a stranger's fails when required, whatever the association" "$out" "::error title=No single checklist pull request::"
