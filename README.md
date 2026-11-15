@@ -116,7 +116,9 @@ Each step writes what it read, checked and did to the run's summary, with how to
   - The artifact is the raw file, named exactly `<package>_<version>.tar.gz` as `R CMD build` names it,
     so that its digest is the file's SHA-256.
     Other jobs of the matrix may upload other artifacts, but no other artifact of the run has that name:
-    the submission takes the one artifact with that exact name, and fails if a run holds more than one.
+    the submission takes the artifact with that exact name.
+    A re-run of the check keeps the earlier attempts' artifacts in the run, so of several the newest is taken,
+    and the log names the one chosen and the ones skipped.
   - The run is a push or dispatch run of the commit in the package's own repository, and it completes with success.
   An artifact expires after at most 90 days, which the draft's asset outlives.
   The standard check workflow runs on a push only to `main` or `master`,
@@ -125,8 +127,9 @@ Each step writes what it read, checked and did to the run's summary, with how to
   the release branch's pull request into `main`, or an empty pull request beside a fix made on `main`.
   Its body carries the marker `<!-- release-checklist: <package> X.Y.Z -->`,
   and its author has write access to the repository; a pull request carrying the marker by anyone else is ignored with a warning.
-  A real run fails if the workflow's token cannot read the author's access;
-  a dry run then warns and accepts an owner, member or collaborator.
+  Where the author's access cannot be read, as for an App's bot account, the author's association decides:
+  a pull request by anyone but an owner, member or collaborator is ignored with a warning, so a stray marker blocks nothing,
+  while an owner's, member's or collaborator's fails a real run with GitHub's error and is accepted with a warning on a dry run.
 - **The dates**, set by the date commit before the checks, as described above: `Date:` in `DESCRIPTION` is required.
 - **The permissions** the calling job grants: `actions: read` to find and download the artifact,
   `contents: write` to draft the release, and `pull-requests: write` to report.
