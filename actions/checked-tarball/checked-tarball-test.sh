@@ -5,7 +5,8 @@
 #   1. `find` takes the newest run of the check workflow on the commit that holds the artifact,
 #      skipping runs without it, and outputs the run, the artifact and its digest.
 #   2. A given run must be of the commit; a commit without a checked tarball fails, as does an artifact without a digest.
-#   3. A run that is not green warns and does not fail.
+#   3. A run that is not green, finished or not, fails, naming the run, its conclusion and its URL;
+#      a run with several artifacts of the name fails.
 #   4. `verify` accepts the file whose SHA-256 is the digest and which holds the release,
 #      and rejects another digest, another release, and a file that is no tarball.
 #
@@ -102,13 +103,28 @@ has "a short SHA fails" "$out" "::error title=No full commit SHA::"
 out=$(CHECK_RUN_ID=10 run find "$SHA" fakepkg 1.0.1)
 has "an artifact without a SHA-256 digest fails" "$out" "::error title=The artifact has no SHA-256 digest::"
 
-section "a run that is not green warns"
-answer "repos/owner/fakepkg/actions/runs/12/artifacts?name=$NAME&per_page=100" \
-  "{\"artifacts\": [{\"id\": 601, \"expired\": false, \"created_at\": \"2026-11-15T10:30:00Z\", \"digest\": \"sha256:$DIGEST\"}]}"
+section "a run that is not green fails"
+artifact 12 601 2026-11-15T10:30:00Z "sha256:$DIGEST"
 out=$(run find "$SHA" fakepkg 1.0.1)
-has "it succeeds" "$out" "exit 0"
-has "with the newest run" "$(cat "$SCRATCH/output")" "run-id=12"
-has "and a warning" "$out" "::warning title=Check run not green::"
+has "the newest run with the tarball failed: the submission fails" "$out" "exit 1"
+has "naming the run, its conclusion and its URL" "$out" \
+  "::error title=The check run is not green::The run 12 of \`R-CMD-check.yaml\` that built \`$NAME\` is \`completed failure\`, not \`completed success\`: https://github.example/owner/fakepkg/actions/runs/12."
+is "and outputs nothing" "$(cat "$SCRATCH/output")" ""
+answer "repos/owner/fakepkg/actions/runs/12" '{"id": 12, "event": "push", "head_repository": {"full_name": "owner/fakepkg"},
+  "head_sha": "'"$SHA"'", "status": "in_progress", "conclusion": null}'
+out=$(CHECK_RUN_ID=12 run find "$SHA" fakepkg 1.0.1)
+has "a given run still in progress fails too" "$out" "is \`in_progress\`, not \`completed success\`"
+
+section "several artifacts of the name in one run fail"
+answer "repos/owner/fakepkg/actions/runs/11/artifacts?name=$NAME&per_page=100" \
+  "{\"artifacts\": [{\"id\": 501, \"expired\": false, \"digest\": \"sha256:$DIGEST\"}, {\"id\": 502, \"expired\": false, \"digest\": \"sha256:$DIGEST\"}]}"
+out=$(CHECK_RUN_ID=11 run find "$SHA" fakepkg 1.0.1)
+has "with a message naming the run and the count" "$out" \
+  "::error title=Several tarball artifacts in one run::The run 11 holds 2 unexpired artifacts named \`$NAME\`"
+answer "repos/owner/fakepkg/actions/runs/11/artifacts?name=$NAME&per_page=100" \
+  "{\"artifacts\": [{\"id\": 501, \"expired\": false, \"digest\": \"sha256:$DIGEST\"}, {\"id\": 502, \"expired\": true, \"digest\": \"sha256:$DIGEST\"}]}"
+out=$(CHECK_RUN_ID=11 run find "$SHA" fakepkg 1.0.1)
+has "an expired one does not count" "$out" "exit 0"
 
 section "commit"
 answer "repos/owner/fakepkg/commits/$SHA/branches-where-head" '[{"name": "release-1.0.1"}]'

@@ -60,22 +60,31 @@ cmd_find() {
   [ $# -eq 2 ] || usage
   local pkg=$1 version=$2
   { valid_package "$pkg" && valid_version "$version"; } || usage
-  local marker="<!-- release-checklist: $pkg $version -->" found trusted others n
+  local marker="<!-- release-checklist: $pkg $version -->" found trusted others n errf
+  errf=$(mktemp)
+  # shellcheck disable=SC2064  # expand now
+  trap "rm -f '$errf'" EXIT
   found=$("$gh" api --paginate "repos/$repo/pulls?state=open&per_page=100" \
-    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | [.number, .author_association, .user.login] | @tsv")
+    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | [.number, .author_association, .user.login] | @tsv" 2>"$errf") ||
+    fail "Checklist" "The open pull requests cannot be read" "Listing the open pull requests of $repo failed: $(head -n 1 "$errf")." -- \
+      "Check that the calling job grants \`pull-requests: read\`, then dispatch the submission again."
   # The author needs write access, read from `collaborators/<login>/permission` (admin, maintain and write read as
-  # `admin` or `write`). Where the token cannot read it, the author's association with the repository stands in:
-  # owner, member or collaborator.
+  # `admin` or `write`). Where the token cannot read it, a real run (REQUIRE) fails with GitHub's error;
+  # a dry run warns and lets the author's association with the repository stand in: owner, member or collaborator.
   local number assoc login perm trusted='' others=''
   while IFS=$'\t' read -r number assoc login; do
     [ -n "$number" ] || continue
     if [[ $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] &&
-      perm=$("$gh" api "repos/$repo/collaborators/$login/permission" --jq .permission 2>/dev/null); then
+      perm=$("$gh" api "repos/$repo/collaborators/$login/permission" --jq .permission 2>"$errf"); then
       case "$perm" in
         admin | write) trusted+="$number"$'\n' ;;
         *) others+="#$number by $login ($perm access) " ;;
       esac
     else
+      [ "${REQUIRE:-false}" != true ] ||
+        fail "Checklist" "The access of the checklist pull request's author cannot be read" \
+          "Reading the access of $login, who opened #$number, failed: $(head -n 1 "$errf"). Nothing was drafted or uploaded." -- \
+          "Check that the calling job's token can read \`repos/$repo/collaborators/$login/permission\`, then dispatch the submission again."
       warn "Permission unknown" \
         "The access of $login, who opened #$number, cannot be read; their association with the repository, $assoc, decides."
       case "$assoc" in
@@ -200,7 +209,11 @@ cmd_attempt() {
   { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version" && valid_sha "$sha" &&
     [[ $sha256 =~ ^[0-9a-f]{64}$ ]]; } || usage
   local marker="<!-- cran-submission-attempt: $pkg $version -->" n body
-  n=$(bot_comments "$pr" "$marker" | grep -c . || true)
+  n=$(bot_comments "$pr" "$marker") ||
+    fail "Attempt" "The earlier attempts cannot be read" \
+      "Reading the comments of #$pr failed, so the attempt cannot be numbered; the upload went through." -- \
+      "Post the attempt's comment by hand from this run's summary: commit \`$sha\`, tarball SHA-256 \`$sha256\`, run $(run_url)."
+  n=$(grep -c . <<<"$n" || true)
   n=$((n + 1))
   body=$(mktemp)
   # shellcheck disable=SC2064  # expand now
@@ -217,7 +230,10 @@ cmd_attempt() {
     echo "CRAN has emailed the maintainer; the submission counts once the link in that email is followed."
     echo "Nothing edits this comment: reply to it with CRAN's answer and what fixed it."
   } >"$body"
-  "$gh" api -X POST "repos/$repo/issues/$pr/comments" -F "body=@$body" --jq .html_url
+  "$gh" api -X POST "repos/$repo/issues/$pr/comments" -F "body=@$body" --jq .html_url ||
+    fail "Attempt" "The attempt could not be recorded" \
+      "Posting attempt $n of $pkg $version to #$pr failed; the upload went through, and the next submission of this version is not refused." -- \
+      "Post the attempt's comment by hand from this run's summary: commit \`$sha\`, tarball SHA-256 \`$sha256\`, run $(run_url)."
   say "Recorded attempt $n on #$pr."
   summary "- Recorded attempt $n of $pkg $version on #$pr." ""
 }

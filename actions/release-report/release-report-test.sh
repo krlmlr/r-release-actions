@@ -55,7 +55,10 @@ has "and a warning about the one without" "$out" "::warning title=Checklist pull
 hasnt "the association does not decide where the permission is known" "$out" "Permission unknown"
 answer "$PULLS" "[$(pull 5 MEMBER member "$MARK"), $(pull 6 NONE nobody "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
-has "where the permission cannot be read, a member's is taken" "$(cat "$SCRATCH/output")" "pr=5"
+has "where the permission cannot be read, a real run fails with GitHub's error" "$out" \
+  "::error title=The access of the checklist pull request's author cannot be read::Reading the access of member, who opened #5, failed: gh: Not Found (HTTP 404)."
+out=$(run find fakepkg 1.0.1)
+has "a dry run lets a member's stand in" "$(cat "$SCRATCH/output")" "pr=5"
 has "with a warning" "$out" "::warning title=Permission unknown::The access of member"
 has "and someone else's is ignored" "$out" "Ignored #6 by nobody (NONE)"
 answer "$PULLS" "[$(pull 4 MEMBER stranger "$MARK")]"
@@ -68,6 +71,11 @@ answer "$PULLS" "[$(pull 7 NONE maint "$MARK"), $(pull 9 NONE other "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
 has "two fail when required" "$out" "2 open pull requests (#7 #9)"
 is "and nothing is written" "$(cat "$SCRATCH/writes")" ""
+
+rm "$API/repos_owner_fakepkg_pulls_state_open_per_page_100.json"
+out=$(run find fakepkg 1.0.1)
+has "unreadable pull requests fail with GitHub's error" "$out" \
+  "::error title=The open pull requests cannot be read::Listing the open pull requests of owner/fakepkg failed: gh: Not Found (HTTP 404)."
 
 section "status"
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
@@ -101,6 +109,11 @@ has "with the commit" "$w" "- Commit: $SHA"
 has "the tarball's SHA-256" "$w" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, SHA-256 \`$TSHA\`"
 has "the run" "$w" "- Run: https://github.example/owner/fakepkg/actions/runs/99"
 has "and the draft" "$w" "- Draft release: https://github.example/owner/fakepkg/releases/7"
+out=$(GH_STUB_FAIL_WRITES=1 run attempt 7 fakepkg 1.0.1 "$SHA" "$TSHA" fakepkg_1.0.1.tar.gz)
+has "a comment that cannot be posted fails, saying what to post by hand" "$out" "::error title=The attempt could not be recorded::"
+has "with the commit and the SHA-256" "$(cat "$SUMMARY")" "commit \`$SHA\`, tarball SHA-256 \`$TSHA\`"
+out=$(run attempt 8 fakepkg 1.0.1 "$SHA" "$TSHA" fakepkg_1.0.1.tar.gz)
+has "earlier attempts that cannot be read fail" "$out" "::error title=The earlier attempts cannot be read::"
 out=$(run attempt 7 fakepkg 1.0.1 "${SHA:0:10}" "$TSHA" fakepkg_1.0.1.tar.gz)
 has "a short SHA is a usage error" "$out" "exit 2"
 

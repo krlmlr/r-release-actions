@@ -14,8 +14,8 @@
 #     Either way it is a push or dispatch run of <sha> in GH_REPO: a pull request run checks a merge commit,
 #     and a run of a fork's branch is the fork's.
 #     Writes `run-id`, `run-url`, `artifact-id` and `sha256` (from the artifact's digest) to GITHUB_OUTPUT.
-#     A run whose conclusion is not success is reported with a warning:
-#     the session confirms a green build before it dispatches, and the submission reads no check results.
+#     That run must have completed with success, or the submission fails, naming the run, its conclusion and its URL.
+#     It must hold exactly one unexpired artifact of that name.
 #   verify <tarball> <sha256> <package> <version>
 #     The file's SHA-256 is the artifact's digest, it is a gzip-compressed tar archive,
 #     its name is `<package>_<version>.tar.gz`, and its DESCRIPTION names that package and version.
@@ -97,10 +97,15 @@ cmd_find() {
   local r found='' artifact=''
   for r in $runs; do
     artifact=$(api "repos/$repo/actions/runs/$r/artifacts?name=$name&per_page=100" \
-      --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | select(. != null) | "\(.id) \(.digest // "")"') ||
+      --jq '.artifacts[] | select(.expired | not) | "\(.id) \(.digest // "")"') ||
       fail "Tarball" "The artifacts cannot be read" "The artifacts of the run $r cannot be read from $repo: $(api_error)." -- \
         "Check that the job holds \`actions: read\`, then dispatch the submission again."
     if [ -n "$artifact" ]; then
+      # upload-artifact refuses a second artifact of a name in a run, so more than one is a producer error.
+      [ "$(grep -c . <<<"$artifact")" -eq 1 ] ||
+        fail "Tarball" "Several tarball artifacts in one run" \
+          "The run $r holds $(grep -c . <<<"$artifact") unexpired artifacts named \`$name\`, and the submission takes exactly one." -- \
+          "Exactly one job of the check workflow uploads the tarball it checked under that name; fix the check workflow."
       found=$r
       break
     fi
@@ -116,7 +121,7 @@ cmd_find() {
     fail "Tarball" "The artifact has no SHA-256 digest" "The artifact $artifact_id of run $found has the digest \`$digest\`." -- \
       "The check workflow uploads the tarball with \`actions/upload-artifact\` v7 or later and \`archive: false\`, which records the file's SHA-256."
   local conclusion run_url
-  conclusion=$(api "repos/$repo/actions/runs/$found" --jq '"\(.status) \(.conclusion // "")"') ||
+  conclusion=$(api "repos/$repo/actions/runs/$found" --jq '"\(.status) \(.conclusion // "")" | rtrimstr(" ")') ||
     fail "Tarball" "The check run cannot be read" "The run $found cannot be read from $repo: $(api_error)." -- \
       "Check that the job holds \`actions: read\`, then dispatch the submission again."
   run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/$found
@@ -125,7 +130,10 @@ cmd_find() {
   val "sha256" "$sha256"
   endgroup
   if [ "$conclusion" != "completed success" ]; then
-    warn "Check run not green" "The run $found that built $name is '$conclusion'; the submission reads no check results, so confirm that the checks of this commit are green."
+    fail "Tarball" "The check run is not green" \
+      "The run $found of \`$workflow\` that built \`$name\` is \`$conclusion\`, not \`completed success\`: $run_url. Nothing was drafted or uploaded." -- \
+      "Open $run_url, fix what failed or wait until it finishes, and dispatch the submission again once a run of this commit is green." \
+      "Pass \`check-run-id\` only for a green run of this commit."
   fi
   summary "- Check run: [$found]($run_url), $conclusion" "- Artifact: \`$name\`, id $artifact_id, sha256 \`$sha256\`" ""
   output run-id "$found" run-url "$run_url" artifact-id "$artifact_id" sha256 "$sha256"
