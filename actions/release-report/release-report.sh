@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
 # Adapted from krlmlr/duckplyr's .github/actions/release-report/release-report.sh at f98ad13 (MIT).
+# Copyright (c) 2023 duckplyr authors; used under the MIT License, whose terms are in LICENSE.
 # Report to the release's checklist pull request.
 #
 #   find <package> <version>
 #     The checklist pull request is the open pull request whose body carries
-#     `<!-- release-checklist: <package> <version> -->` and whose author is an owner, member or collaborator
-#     of the repository; one carrying the marker by anyone else is named in a warning and ignored.
+#     `<!-- release-checklist: <package> <version> -->` and whose author has write access to the repository,
+#     or, where the token cannot read that, is an owner, member or collaborator;
+#     one carrying the marker by anyone else is named in a warning and ignored.
 #     Writes `pr` to GITHUB_OUTPUT. None, or more than one, fails when REQUIRE is `true`, and warns otherwise.
+#   submitted <pr> <package> <version> <sha256>
+#     Refuses a tarball that an earlier attempt of the version uploaded, as its attempt comment records,
+#     because an upload whose confirmation link was never followed does not show in CRAN's queue.
+#     RESUBMIT `true` lets it through with a warning; DRY_RUN `true` turns the refusal into a warning.
 #   status <pr> <key> <title>
 #     The workflow's one comment, found by `<!-- release-report: <key> -->` among github-actions[bot]'s comments,
 #     created or updated in place with the job results in RESULTS and the Markdown in DETAILS.
@@ -21,6 +27,7 @@
 #   GH_TOKEN, GH_REPO    a token with `pull-requests: write` (`read` for `find`), and the repository, owner/name
 #   GH                   the gh command, default `gh`; release-report-test.sh stubs it
 #   REQUIRE              `find`: `true` fails without exactly one checklist pull request
+#   RESUBMIT, DRY_RUN    `submitted`: `true` lets a tarball submitted before through, or only warns about it
 #   RESULTS              `status`: one `<job>=<result>` per line, as `needs.<job>.result` gives it
 #   DETAILS              `status`: Markdown appended below the job results, may be empty
 #   DRAFT_URL            `attempt`: the draft release
@@ -57,10 +64,30 @@ cmd_find() {
   local marker="<!-- release-checklist: $pkg $version -->" found trusted others n
   found=$("$gh" api --paginate "repos/$repo/pulls?state=open&per_page=100" \
     --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | [.number, .author_association, .user.login] | @tsv")
-  trusted=$(printf '%s\n' "$found" | awk -F '\t' '$2 == "OWNER" || $2 == "MEMBER" || $2 == "COLLABORATOR" { print $1 }')
-  others=$(printf '%s\n' "$found" | awk -F '\t' 'NF && !($2 == "OWNER" || $2 == "MEMBER" || $2 == "COLLABORATOR") { printf "#%s by %s (%s) ", $1, $3, $2 }')
+  # The author needs write access, read from `collaborators/<login>/permission` (admin, maintain and write read as
+  # `admin` or `write`). Where the token cannot read it, the author's association with the repository stands in:
+  # owner, member or collaborator.
+  local number assoc login perm trusted='' others=''
+  while IFS=$'\t' read -r number assoc login; do
+    [ -n "$number" ] || continue
+    if [[ $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] &&
+      perm=$("$gh" api "repos/$repo/collaborators/$login/permission" --jq .permission 2>/dev/null); then
+      case "$perm" in
+        admin | write) trusted+="$number"$'\n' ;;
+        *) others+="#$number by $login ($perm access) " ;;
+      esac
+    else
+      warn "Permission unknown" \
+        "The access of $login, who opened #$number, cannot be read; their association with the repository, $assoc, decides."
+      case "$assoc" in
+        OWNER | MEMBER | COLLABORATOR) trusted+="$number"$'\n' ;;
+        *) others+="#$number by $login ($assoc) " ;;
+      esac
+    fi
+  done <<<"$found"
+  trusted=${trusted%$'\n'}
   [ -z "$others" ] ||
-    warn "Checklist pull request ignored" "Ignored ${others}: the checklist pull request must be opened by an owner, member or collaborator."
+    warn "Checklist pull request ignored" "Ignored ${others}: the checklist pull request must be opened by someone with write access."
   n=$(printf '%s' "$trusted" | grep -c . || true)
   if [ "$n" -eq 1 ]; then
     say "Checklist pull request: #$trusted"
@@ -72,12 +99,41 @@ cmd_find() {
   [ "$n" -eq 0 ] || what="$n open pull requests ($(printf '%s' "$trusted" | sed 's/^/#/' | paste -s -d ' ' -))"
   if [ "${REQUIRE:-false}" = true ]; then
     fail "Checklist" "No single checklist pull request" \
-      "There is $what by an owner, member or collaborator whose body carries \`$marker\`; the submission records each attempt there. Nothing was drafted or uploaded." -- \
+      "There is $what by someone with write access whose body carries \`$marker\`; the submission records each attempt there. Nothing was drafted or uploaded." -- \
       "Put the marker \`$marker\` into the body of the release's checklist pull request, and only of that one, then dispatch the submission again."
   fi
   warn "No single checklist pull request" "There is $what whose body carries $marker; a real run fails."
   summary "- Checklist pull request: $what carries \`$marker\`; a real run fails." ""
   output pr ""
+}
+
+cmd_submitted() {
+  [ $# -eq 4 ] || usage
+  local pr=$1 pkg=$2 version=$3 sha256=$4
+  { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version" && [[ $sha256 =~ ^[0-9a-f]{64}$ ]]; } || usage
+  local marker="<!-- cran-submission-attempt: $pkg $version -->" earlier
+  # An upload whose confirmation link nobody followed does not show in CRAN's queue; the attempt comment does.
+  earlier=$("$gh" api --paginate "repos/$repo/issues/$pr/comments?per_page=100" \
+    --jq ".[] | select(.user.login == \"$bot\" and (.body | startswith(\"$marker\")) and (.body | contains(\"$sha256\"))) | .html_url" |
+    paste -s -d ' ' -)
+  if [ -z "$earlier" ]; then
+    summary "- No earlier attempt of $pkg $version uploaded this tarball." ""
+    return 0
+  fi
+  if [ "${RESUBMIT:-false}" = true ]; then
+    warn "Resubmission" "This tarball of $pkg $version was submitted before ($earlier); \`resubmit\` sends it again."
+    summary "- **Resubmission:** this tarball was submitted before ($earlier), and \`resubmit\` sends it again." ""
+    return 0
+  fi
+  if [ "${DRY_RUN:-false}" = true ]; then
+    warn "Submitted before" "This tarball of $pkg $version was submitted before ($earlier); a real run refuses unless \`resubmit\` is on."
+    summary "- **Submitted before:** $earlier; a real run refuses unless \`resubmit\` is on." ""
+    return 0
+  fi
+  fail "Attempt" "This tarball was submitted before" \
+    "An earlier attempt uploaded this tarball of $pkg $version, SHA-256 \`$sha256\`: $earlier. Nothing was drafted or uploaded." -- \
+    "If CRAN's confirmation email of that attempt arrived, follow its link instead of submitting again." \
+    "If CRAN never received it, or asks for the same tarball again, dispatch the submission with \`resubmit\` on."
 }
 
 cmd_status() {
@@ -104,7 +160,9 @@ cmd_status() {
     echo "$marker"
     echo "### $icon $title: $overall"
     echo
-    echo "Run [#${GITHUB_RUN_NUMBER:-0}]($(run_url)) (attempt ${GITHUB_RUN_ATTEMPT:-1}, ${GITHUB_EVENT_NAME:-}) on \`${GITHUB_REF_NAME:-}\`, $(date -u '+%Y-%m-%d %H:%M UTC')."
+    # shellcheck disable=SC2016  # Markdown backticks
+    printf 'Run [#%s](%s) (attempt %s, %s) on `%s`, %s.\n' "${GITHUB_RUN_NUMBER:-0}" "$(run_url)" \
+      "${GITHUB_RUN_ATTEMPT:-1}" "${GITHUB_EVENT_NAME:-}" "${GITHUB_REF_NAME:-}" "$(date -u '+%Y-%m-%d %H:%M UTC')"
     echo
     while IFS='=' read -r job result; do
       [ -n "$job" ] || continue
@@ -130,7 +188,8 @@ cmd_status() {
 cmd_attempt() {
   [ $# -eq 6 ] || usage
   local pr=$1 pkg=$2 version=$3 sha=$4 sha256=$5 name=$6
-  { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version" && valid_sha "$sha" && [[ $sha256 =~ ^[0-9a-f]{64}$ ]]; } || usage
+  { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version" && valid_sha "$sha" &&
+    [[ $sha256 =~ ^[0-9a-f]{64}$ ]]; } || usage
   local marker="<!-- cran-submission-attempt: $pkg $version -->" n body
   n=$(bot_comments "$pr" "$marker" | grep -c . || true)
   n=$((n + 1))
@@ -146,7 +205,7 @@ cmd_attempt() {
     echo "- Run: $(run_url)"
     [ -z "${DRAFT_URL:-}" ] || echo "- Draft release: $DRAFT_URL"
     echo
-    echo "CRAN has e-mailed the maintainer; the submission counts once the link in that e-mail is followed."
+    echo "CRAN has emailed the maintainer; the submission counts once the link in that email is followed."
     echo "Nothing edits this comment: reply to it with CRAN's answer and what fixed it."
   } >"$body"
   "$gh" api -X POST "repos/$repo/issues/$pr/comments" -F "body=@$body" --jq .html_url
@@ -156,6 +215,7 @@ cmd_attempt() {
 
 case "${1:-}" in
   find) shift; cmd_find "$@" ;;
+  submitted) shift; cmd_submitted "$@" ;;
   status) shift; cmd_status "$@" ;;
   attempt) shift; cmd_attempt "$@" ;;
   *) usage ;;

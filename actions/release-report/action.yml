@@ -1,27 +1,29 @@
 # Adapted from krlmlr/duckplyr's .github/actions/release-report/action.yml at f98ad13 (MIT).
+# Copyright (c) 2023 duckplyr authors; used under the MIT License, whose terms are in LICENSE.
 name: "Release report"
 description: >
   Finds the release's checklist pull request by its marker (mode `find`),
+  refuses a tarball an earlier attempt uploaded (mode `submitted`),
   keeps the workflow's one comment there, updated in place (mode `status`),
   or records a submission attempt in a new comment (mode `attempt`),
   with release-report.sh beside this file.
-  The job needs `pull-requests: read` for `find`, and `pull-requests: write` otherwise.
+  The job needs `pull-requests: read` for `find` and `submitted`, and `pull-requests: write` otherwise.
 
 inputs:
   mode:
-    description: "`find`, `status` or `attempt`"
+    description: "`find`, `submitted`, `status` or `attempt`"
     required: true
   token:
     description: "A token with the permission the mode needs"
     required: true
   pr:
-    description: "`status`, `attempt`: the checklist pull request's number"
+    description: "`submitted`, `status`, `attempt`: the checklist pull request's number"
     default: ""
   package:
-    description: "`find`, `attempt`: the package name"
+    description: "`find`, `submitted`, `attempt`: the package name"
     default: ""
   version:
-    description: "`find`, `attempt`: the release version"
+    description: "`find`, `submitted`, `attempt`: the release version"
     default: ""
   require:
     description: "`find`: `true` fails without exactly one checklist pull request"
@@ -42,8 +44,14 @@ inputs:
     description: "`attempt`: the full SHA of the submitted commit"
     default: ""
   sha256:
-    description: "`attempt`: the tarball's SHA-256"
+    description: "`submitted`, `attempt`: the tarball's SHA-256"
     default: ""
+  resubmit:
+    description: "`submitted`: `true` lets a tarball an earlier attempt uploaded through"
+    default: "false"
+  dry-run:
+    description: "`submitted`: `true` only warns about a tarball an earlier attempt uploaded"
+    default: "false"
   tarball-name:
     description: "`attempt`: the tarball's file name"
     default: ""
@@ -76,10 +84,13 @@ runs:
         SHA256: ${{ inputs.sha256 }}
         TARBALL_NAME: ${{ inputs.tarball-name }}
         DRAFT_URL: ${{ inputs.draft-url }}
+        RESUBMIT: ${{ inputs.resubmit }}
+        DRY_RUN: ${{ inputs.dry-run }}
       run: |
         script="$GITHUB_ACTION_PATH/release-report.sh"
         case "$MODE" in
           find) "$script" find "$PACKAGE" "$VERSION" ;;
+          submitted) "$script" submitted "$PR" "$PACKAGE" "$VERSION" "$SHA256" ;;
           status) "$script" status "$PR" "$KEY" "$TITLE" ;;
           attempt) "$script" attempt "$PR" "$PACKAGE" "$VERSION" "$SHA" "$SHA256" "$TARBALL_NAME" ;;
           *) echo "::error::Unknown mode: $MODE"; exit 2 ;;

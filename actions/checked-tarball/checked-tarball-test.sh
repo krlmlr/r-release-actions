@@ -35,21 +35,35 @@ run() {
 }
 
 DIGEST=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+# A run: <id> <created at> <event> <repository> <head sha> <conclusion>
+runj() {
+  printf '{"id": %s, "created_at": "%s", "event": "%s", "head_repository": {"full_name": "%s"}, "head_sha": "%s",
+    "status": "completed", "conclusion": "%s"}' "$@"
+}
+artifact() { # <run> <artifact id> <created at> <digest>
+  answer "repos/owner/fakepkg/actions/runs/$1/artifacts?name=$NAME&per_page=100" \
+    "{\"artifacts\": [{\"id\": $2, \"expired\": false, \"created_at\": \"$3\", \"digest\": \"$4\"}]}"
+}
+R10=$(runj 10 2026-11-14T10:00:00Z push owner/fakepkg "$SHA" success)
+R11=$(runj 11 2026-11-14T12:00:00Z workflow_dispatch owner/fakepkg "$SHA" success)
+R12=$(runj 12 2026-11-15T10:00:00Z push owner/fakepkg "$SHA" failure)
+# Newer, with the tarball, and never to be taken: a pull request run, and a run of a fork's branch.
+R13=$(runj 13 2026-11-15T11:00:00Z pull_request owner/fakepkg "$SHA" success)
+R14=$(runj 14 2026-11-15T12:00:00Z push fork/fakepkg "$SHA" success)
 answer "repos/owner/fakepkg/actions/workflows/R-CMD-check.yaml/runs?head_sha=$SHA&per_page=100" \
-  '{"workflow_runs": [{"id": 10, "created_at": "2026-11-14T10:00:00Z"}, {"id": 12, "created_at": "2026-11-15T10:00:00Z"}, {"id": 11, "created_at": "2026-11-14T12:00:00Z"}]}'
+  "{\"workflow_runs\": [$R10, $R12, $R11, $R13, $R14]}"
 answer "repos/owner/fakepkg/actions/runs/12/artifacts?name=$NAME&per_page=100" '{"artifacts": []}'
-answer "repos/owner/fakepkg/actions/runs/11/artifacts?name=$NAME&per_page=100" \
-  "{\"artifacts\": [{\"id\": 501, \"expired\": false, \"created_at\": \"2026-11-14T12:30:00Z\", \"digest\": \"sha256:$DIGEST\"}]}"
-answer "repos/owner/fakepkg/actions/runs/10/artifacts?name=$NAME&per_page=100" \
-  '{"artifacts": [{"id": 401, "expired": false, "created_at": "2026-11-14T10:30:00Z", "digest": "sha256:bbbb"}]}'
-answer "repos/owner/fakepkg/actions/runs/11" "{\"id\": 11, \"head_sha\": \"$SHA\", \"status\": \"completed\", \"conclusion\": \"success\"}"
-answer "repos/owner/fakepkg/actions/runs/12" "{\"id\": 12, \"head_sha\": \"$SHA\", \"status\": \"completed\", \"conclusion\": \"failure\"}"
-answer "repos/owner/fakepkg/actions/runs/10" "{\"id\": 10, \"head_sha\": \"$SHA\", \"status\": \"completed\", \"conclusion\": \"success\"}"
-answer "repos/owner/fakepkg/actions/runs/20" "{\"id\": 20, \"head_sha\": \"$OTHER\", \"status\": \"completed\", \"conclusion\": \"success\"}"
+artifact 11 501 2026-11-14T12:30:00Z "sha256:$DIGEST"
+artifact 10 401 2026-11-14T10:30:00Z sha256:bbbb
+artifact 13 1301 2026-11-15T11:30:00Z "sha256:$DIGEST"
+artifact 14 1401 2026-11-15T12:30:00Z "sha256:$DIGEST"
+for r in R10 R11 R12 R13 R14; do answer "repos/owner/fakepkg/actions/runs/${r#R}" "${!r}"; done
+answer "repos/owner/fakepkg/actions/runs/20" "$(runj 20 2026-11-15T10:00:00Z push owner/fakepkg "$OTHER" success)"
 
-section "find takes the newest run on the commit that holds the tarball"
+section "find takes the newest push or dispatch run on the commit in the repository that holds the tarball"
 out=$(run find "$SHA" fakepkg 1.0.1)
 has "it succeeds" "$out" "exit 0"
+hasnt "skipping the pull request run and the fork's" "$(cat "$SCRATCH/gh.log")" "runs/14/artifacts"
 is "the outputs" "$(cat "$SCRATCH/output")" "run-id=11
 run-url=https://github.example/owner/fakepkg/actions/runs/11
 artifact-id=501
@@ -62,14 +76,19 @@ out=$(CHECK_RUN_ID=11 run find "$SHA" fakepkg 1.0.1)
 has "of the commit is taken" "$out" "exit 0"
 has "with its artifact" "$(cat "$SCRATCH/output")" "artifact-id=501"
 out=$(CHECK_RUN_ID=20 run find "$SHA" fakepkg 1.0.1)
-has "of another commit fails" "$out" "::error title=The check run is of another commit::"
+has "of another commit fails" "$out" "::error title=The check run is not of the commit::"
+out=$(CHECK_RUN_ID=13 run find "$SHA" fakepkg 1.0.1)
+has "a pull request run fails" "$out" "::error title=The check run is not of the commit::The run 13 is a \`pull_request\` run"
+out=$(CHECK_RUN_ID=14 run find "$SHA" fakepkg 1.0.1)
+has "a fork's run fails" "$out" "in fork/fakepkg; the submission takes a push or dispatch run"
 out=$(CHECK_RUN_ID='1; x' run find "$SHA" fakepkg 1.0.1)
 has "that is no number fails" "$out" "::error title=No valid run ID::"
 
 section "no checked tarball"
 out=$(run find "$OTHER" fakepkg 1.0.1)
 has "a commit without check runs fails" "$out" "::error title=The check runs cannot be read::"
-answer "repos/owner/fakepkg/actions/workflows/R-CMD-check.yaml/runs?head_sha=$OTHER&per_page=100" '{"workflow_runs": [{"id": 12, "created_at": "2026-11-15T10:00:00Z"}]}'
+answer "repos/owner/fakepkg/actions/workflows/R-CMD-check.yaml/runs?head_sha=$OTHER&per_page=100" \
+  "{\"workflow_runs\": [$(runj 21 2026-11-15T10:00:00Z push owner/fakepkg "$OTHER" success)]}"
 out=$(run find "$OTHER" fakepkg 1.0.1)
 has "a commit whose runs hold no tarball fails" "$out" "::error title=No checked tarball::"
 has "saying to dispatch the check" "$(cat "$SUMMARY")" "Dispatch the check workflow on this commit"
@@ -85,6 +104,17 @@ out=$(run find "$SHA" fakepkg 1.0.1)
 has "it succeeds" "$out" "exit 0"
 has "with the newest run" "$(cat "$SCRATCH/output")" "run-id=12"
 has "and a warning" "$out" "::warning title=Check run not green::"
+
+section "commit"
+answer "repos/owner/fakepkg/commits/$SHA/branches-where-head" '[{"name": "release-1.0.1"}]'
+out=$(run commit "$SHA")
+has "the head of a branch passes" "$out" "exit 0"
+has "naming it" "$(cat "$SUMMARY")" "the head of \`release-1.0.1\` in owner/fakepkg"
+answer "repos/owner/fakepkg/commits/$OTHER/branches-where-head" '[]'
+out=$(run commit "$OTHER")
+has "a commit that heads no branch, a fork's or a superseded one, fails" "$out" "::error title=The commit is no branch head::"
+out=$(run commit 89abcdef0123456789abcdef0123456789abcde0)
+has "as does one GitHub cannot answer for" "$out" "::error title=The commit is no branch head::"
 
 section "verify"
 mkdir -p "$SCRATCH/pkg/fakepkg" "$SCRATCH/dl"

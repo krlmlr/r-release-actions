@@ -6,9 +6,13 @@
 # That workflow keeps the file as a raw (unzipped) artifact named `<package>_<version>.tar.gz`,
 # uploaded with `actions/upload-artifact` and `archive: false`, so that the artifact's digest is the file's SHA-256.
 #
+#   commit <sha>
+#     The commit is the head of a branch of GH_REPO (`commits/<sha>/branches-where-head`),
+#     so a commit that exists only in a fork, or one a later push superseded, is refused.
 #   find <sha> <package> <version>
-#     The run is CHECK_RUN_ID when set, and must have been made on <sha>;
-#     otherwise the newest run of the workflow CHECK_WORKFLOW made on <sha> that holds the artifact.
+#     The run is CHECK_RUN_ID when set, otherwise the newest run of the workflow CHECK_WORKFLOW on <sha> that holds the artifact.
+#     Either way it is a push or dispatch run of <sha> in GH_REPO: a pull request run checks a merge commit,
+#     and a run of a fork's branch is the fork's.
 #     Writes `run-id`, `run-url`, `artifact-id` and `sha256` (from the artifact's digest) to GITHUB_OUTPUT.
 #     A run whose conclusion is not success is reported with a warning:
 #     the session confirms a green build before it dispatches, and the submission reads no check results.
@@ -42,6 +46,7 @@ cmd_find() {
   [ $# -eq 3 ] || usage
   local sha=$1 pkg=$2 version=$3
   local repo=${GH_REPO:?} workflow=${CHECK_WORKFLOW:-R-CMD-check.yaml} run_id=${CHECK_RUN_ID:-}
+  valid_repo "$repo" || usage
   valid_sha "$sha" || fail "Tarball" "No full commit SHA" "\`$sha\` is no full 40-character commit SHA." -- \
     "Pass the full SHA of the commit to submit, such as \`\${{ github.sha }}\`."
   { valid_package "$pkg" && valid_version "$version"; } || usage
@@ -53,23 +58,29 @@ cmd_find() {
   group "Tarball: the check run of $(printf '%s' "${sha:0:10}")"
   val "commit" "$sha"
   val "artifact" "$name"
+  # Only runs on a branch of this repository check the commit itself:
+  # a pull request run checks a merge commit, and a run in a fork belongs to the fork.
+  local accept="select((.event == \"push\" or .event == \"workflow_dispatch\")
+    and .head_sha == \"$sha\" and .head_repository.full_name == \"$repo\")"
   local runs
   if [ -n "$run_id" ]; then
     [[ $run_id =~ ^[0-9]+$ ]] || fail "Tarball" "No valid run ID" "\`$run_id\` is no workflow run ID." -- \
       "Pass the numeric ID of the check run, from its URL, or leave it empty to search."
     val "run (given)" "$run_id"
-    local head
-    head=$("$gh" api "repos/$repo/actions/runs/$run_id" --jq .head_sha) ||
+    local given
+    given=$("$gh" api "repos/$repo/actions/runs/$run_id" --jq '"\(.event) \(.head_repository.full_name) \(.head_sha)"') ||
       fail "Tarball" "The check run cannot be read" "The run $run_id cannot be read from $repo." -- \
         "Check the run ID, and that the job holds \`actions: read\`."
-    [ "$head" = "$sha" ] ||
-      fail "Tarball" "The check run is of another commit" "The run $run_id checked \`$head\`, not \`$sha\`, the commit to submit." -- \
-        "Pass the run that checked the commit to submit, or leave the run ID empty to search for it."
-    runs=$run_id
+    runs=$("$gh" api "repos/$repo/actions/runs/$run_id" --jq "$accept | .id")
+    local what
+    what="The run $run_id is a \`${given%% *}\` run of \`$(cut -d' ' -f3 <<<"$given")\` in $(cut -d' ' -f2 <<<"$given")"
+    [ -n "$runs" ] ||
+      fail "Tarball" "The check run is not of the commit" "$what; the submission takes a push or dispatch run of \`$sha\` in $repo." -- \
+        "Pass a push or dispatch run of the commit to submit on this repository, or leave the run ID empty to search for it."
   else
     val "workflow" "$workflow"
     runs=$("$gh" api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" \
-      --jq '.workflow_runs | sort_by(.created_at) | reverse | .[].id') ||
+      --jq "[.workflow_runs[] | $accept] | sort_by(.created_at) | reverse | .[].id") ||
       fail "Tarball" "The check runs cannot be read" "The runs of \`$workflow\` cannot be read from $repo." -- \
         "Check that \`$workflow\` is the check workflow's file name, and that the job holds \`actions: read\`."
   fi
@@ -77,7 +88,8 @@ cmd_find() {
   local r found='' artifact=''
   for r in $runs; do
     artifact=$("$gh" api "repos/$repo/actions/runs/$r/artifacts?name=$name&per_page=100" \
-      --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | select(. != null) | "\(.id) \(.digest // "")"')
+      --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | select(. != null) | "\(.id) \(.digest // "")"') ||
+      artifact=''
     if [ -n "$artifact" ]; then
       found=$r
       break
@@ -85,7 +97,7 @@ cmd_find() {
   done
   [ -n "$found" ] ||
     fail "Tarball" "No checked tarball" \
-      "No ${run_id:+given }run of \`$workflow\` on \`${sha:0:10}\` holds an unexpired artifact \`$name\`." -- \
+      "No ${run_id:+given }push or dispatch run of \`$workflow\` on \`${sha:0:10}\` in $repo holds an unexpired artifact \`$name\`." -- \
       "Dispatch the check workflow on this commit, wait until it is green, and dispatch the submission again." \
       "An artifact expires after at most 90 days: a commit checked that long ago is checked again."
   local artifact_id=${artifact%% *} digest=${artifact#* }
@@ -107,6 +119,22 @@ cmd_find() {
   output run-id "$found" run-url "$run_url" artifact-id "$artifact_id" sha256 "$sha256"
 }
 
+cmd_commit() {
+  [ $# -eq 1 ] || usage
+  local sha=$1 repo=${GH_REPO:?} branches
+  { valid_sha "$sha" && valid_repo "$repo"; } || usage
+  # GitHub resolves a commit of any fork in the repository's network, so resolving it proves nothing;
+  # a branch of this repository whose head it is does.
+  branches=$("$gh" api "repos/$repo/commits/$sha/branches-where-head" --jq '.[].name' 2>/dev/null | paste -s -d ' ' -) || branches=''
+  [ -n "$branches" ] ||
+    fail "Commit" "The commit is no branch head" \
+      "\`$sha\` is the head of no branch of $repo, so it may be a fork's commit or one a later push superseded. Nothing was drafted or uploaded." -- \
+      "Dispatch the submission on the release branch, or on \`main\` on the fast path, and pass its head, \`\${{ github.sha }}\`."
+  val "commit" "$sha"
+  val "head of" "$branches"
+  summary "- Commit: $(commit_link "$sha"), the head of \`$branches\` in $repo" ""
+}
+
 cmd_verify() {
   [ $# -eq 4 ] || usage
   local tarball=$1 expected=$2 pkg=$3 version=$4
@@ -122,7 +150,8 @@ cmd_verify() {
   val "sha256" "$actual"
   val "digest" "$expected"
   [ "$actual" = "$expected" ] ||
-    fail "Verify" "The tarball is not the checked one" "The downloaded file's SHA-256 is \`$actual\`, and the artifact's digest is \`$expected\`. Nothing was drafted or uploaded." -- \
+    fail "Verify" "The tarball is not the checked one" \
+      "The downloaded file's SHA-256 is \`$actual\`, and the artifact's digest is \`$expected\`. Nothing was drafted or uploaded." -- \
       "Dispatch the submission again; if this persists, dispatch the check workflow on the commit again."
   [ "$base" = "${pkg}_${version}.tar.gz" ] ||
     fail "Verify" "The tarball is misnamed" "The checked tarball is \`$base\`, and the release is \`${pkg}_${version}.tar.gz\`." -- \
@@ -146,6 +175,7 @@ cmd_verify() {
 }
 
 case "${1:-}" in
+  commit) shift; cmd_commit "$@" ;;
   find) shift; cmd_find "$@" ;;
   verify) shift; cmd_verify "$@" ;;
   *) usage ;;

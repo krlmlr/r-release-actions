@@ -3,8 +3,9 @@ description: >
   Downloads the source tarball that a run of the check workflow built and checked for a commit,
   and verifies it against the artifact's digest and the release it should hold,
   with checked-tarball.sh beside this file.
-  Without `artifact-id`, finds the run and the artifact first.
-  The job needs `actions: read`.
+  Without `artifact-id`, first checks that the commit is the head of a branch of the repository,
+  and finds the run and the artifact.
+  The job needs `actions: read`, and `contents: read` without `artifact-id`.
 
 inputs:
   sha:
@@ -29,7 +30,7 @@ inputs:
     description: "With `artifact-id`: the artifact's digest"
     default: ""
   token:
-    description: "A token with `actions: read` on the repository"
+    description: "A token with `actions: read` and, without `artifact-id`, `contents: read` on the repository"
     required: true
 
 outputs:
@@ -63,6 +64,7 @@ runs:
         PACKAGE: ${{ inputs.package }}
         VERSION: ${{ inputs.version }}
       run: |
+        "$GITHUB_ACTION_PATH/checked-tarball.sh" commit "$SHA"
         "$GITHUB_ACTION_PATH/checked-tarball.sh" find "$SHA" "$PACKAGE" "$VERSION"
       shell: bash
 
