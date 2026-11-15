@@ -6,7 +6,7 @@
 #      skipping runs without it, and outputs the run, the artifact and its digest.
 #   2. A given run must be of the commit; a commit without a checked tarball fails, as does an artifact without a digest.
 #   3. A run that is not green, finished or not, fails, naming the run, its conclusion and its URL;
-#      a run with several artifacts of the name fails.
+#      of several artifacts of the name, which re-runs leave, the newest is taken and the log names them all.
 #   4. `verify` accepts the file whose SHA-256 is the digest and which holds the release,
 #      and rejects another digest, another release, and a file that is no tarball.
 #
@@ -115,16 +115,27 @@ answer "repos/owner/fakepkg/actions/runs/12" '{"id": 12, "event": "push", "head_
 out=$(CHECK_RUN_ID=12 run find "$SHA" fakepkg 1.0.1)
 has "a given run still in progress fails too" "$out" "is \`in_progress\`, not \`completed success\`"
 
-section "several artifacts of the name in one run fail"
+section "several artifacts of the name in one run, left by re-runs"
 answer "repos/owner/fakepkg/actions/runs/11/artifacts?name=$NAME&per_page=100" \
-  "{\"artifacts\": [{\"id\": 501, \"expired\": false, \"digest\": \"sha256:$DIGEST\"}, {\"id\": 502, \"expired\": false, \"digest\": \"sha256:$DIGEST\"}]}"
+  "{\"artifacts\": [{\"id\": 501, \"expired\": false, \"created_at\": \"2026-11-14T12:30:00Z\", \"digest\": \"sha256:bbbb\"},
+    {\"id\": 503, \"expired\": false, \"created_at\": \"2026-11-14T14:30:00Z\", \"digest\": \"sha256:$DIGEST\"},
+    {\"id\": 502, \"expired\": false, \"created_at\": \"2026-11-14T13:30:00Z\", \"digest\": \"sha256:cccc\"},
+    {\"id\": 504, \"expired\": true, \"created_at\": \"2026-11-14T15:30:00Z\", \"digest\": \"sha256:dddd\"}]}"
 out=$(CHECK_RUN_ID=11 run find "$SHA" fakepkg 1.0.1)
-has "with a message naming the run and the count" "$out" \
-  "::error title=Several tarball artifacts in one run::The run 11 holds 2 unexpired artifacts named \`$NAME\`"
+has "the newest unexpired one is taken" "$out" "exit 0"
+is "with its digest" "$(sed -n 's/^\(artifact-id\|sha256\)=//p' "$SCRATCH/output")" "503
+$DIGEST"
+has "the log names the one chosen" "$out" "    chosen:  503 (created 2026-11-14T14:30:00Z)"
+has "and the ones skipped, newest first" "$out" "    skipped: 502 (created 2026-11-14T13:30:00Z)
+    skipped: 501 (created 2026-11-14T12:30:00Z)"
+hasnt "without a warning" "$out" "::warning"
+hasnt "the expired one is not considered" "$out" "504"
 answer "repos/owner/fakepkg/actions/runs/11/artifacts?name=$NAME&per_page=100" \
-  "{\"artifacts\": [{\"id\": 501, \"expired\": false, \"digest\": \"sha256:$DIGEST\"}, {\"id\": 502, \"expired\": true, \"digest\": \"sha256:$DIGEST\"}]}"
+  "{\"artifacts\": [{\"id\": 501, \"expired\": false, \"created_at\": \"2026-11-14T12:30:00Z\", \"digest\": \"sha256:$DIGEST\"},
+    {\"id\": 503, \"expired\": false, \"created_at\": \"2026-11-14T14:30:00Z\", \"digest\": \"sha256:bbbb\"}]}"
 out=$(CHECK_RUN_ID=11 run find "$SHA" fakepkg 1.0.1)
-has "an expired one does not count" "$out" "exit 0"
+has "the digest check applies to the chosen one" "$out" "::error title=The artifact has no SHA-256 digest::The artifact 503"
+artifact 11 501 2026-11-14T12:30:00Z "sha256:$DIGEST"
 
 section "commit"
 answer "repos/owner/fakepkg/commits/$SHA/branches-where-head" '[{"name": "release-1.0.1"}]'

@@ -15,7 +15,8 @@
 #     and a run of a fork's branch is the fork's.
 #     Writes `run-id`, `run-url`, `artifact-id` and `sha256` (from the artifact's digest) to GITHUB_OUTPUT.
 #     That run must have completed with success, or the submission fails, naming the run, its conclusion and its URL.
-#     It must hold exactly one unexpired artifact of that name.
+#     Of several unexpired artifacts of that name in the run, which re-runs leave, the newest is taken,
+#     and the log names the one chosen and the ones skipped.
 #   verify <tarball> <sha256> <package> <version>
 #     The file's SHA-256 is the artifact's digest, it is a gzip-compressed tar archive,
 #     its name is `<package>_<version>.tar.gz`, and its DESCRIPTION names that package and version.
@@ -96,16 +97,18 @@ cmd_find() {
 
   local r found='' artifact=''
   for r in $runs; do
+    # Newest first: a re-run of the check keeps the earlier attempts' artifacts of the same name in the run.
     artifact=$(api "repos/$repo/actions/runs/$r/artifacts?name=$name&per_page=100" \
-      --jq '.artifacts[] | select(.expired | not) | "\(.id) \(.digest // "")"') ||
+      --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[] | "\(.id) \(.digest // "") \(.created_at)"') ||
       fail "Tarball" "The artifacts cannot be read" "The artifacts of the run $r cannot be read from $repo: $(api_error)." -- \
         "Check that the job holds \`actions: read\`, then dispatch the submission again."
     if [ -n "$artifact" ]; then
-      # upload-artifact refuses a second artifact of a name in a run, so more than one is a producer error.
-      [ "$(grep -c . <<<"$artifact")" -eq 1 ] ||
-        fail "Tarball" "Several tarball artifacts in one run" \
-          "The run $r holds $(grep -c . <<<"$artifact") unexpired artifacts named \`$name\`, and the submission takes exactly one." -- \
-          "Exactly one job of the check workflow uploads the tarball it checked under that name; fix the check workflow."
+      if [ "$(grep -c . <<<"$artifact")" -gt 1 ]; then
+        say "  The run $r holds $(grep -c . <<<"$artifact") artifacts named $name, from re-runs; taking the newest:"
+        sed -n '1s/^\([0-9]*\) [^ ]* \(.*\)$/    chosen:  \1 (created \2)/p; 2,$s/^\([0-9]*\) [^ ]* \(.*\)$/    skipped: \1 (created \2)/p' <<<"$artifact"
+      fi
+      artifact=$(head -n 1 <<<"$artifact")
+      artifact=${artifact% *}
       found=$r
       break
     fi
