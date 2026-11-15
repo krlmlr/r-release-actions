@@ -7,7 +7,8 @@
 #            and finds the checklist pull request (a real run fails without one)
 #   tarball  checks that the commit heads a branch of the repository, finds the push or dispatch run of the check workflow
 #            on it and its tarball artifact, fails unless that run is green, downloads and verifies the tarball,
-#            refuses a version an earlier attempt submitted (unless `resubmit`), and refuses while CRAN's incoming queue holds a submission of the package
+#            refuses a version an earlier attempt submitted (unless `resubmit`),
+#            and refuses while CRAN's incoming queue holds a submission of the package
 #   draft    a real run only: creates or updates the version's draft release with the tarball attached; writes no tag
 #   preview  a dry run only, with a read-only token: reports what `draft` would write
 #   upload   posts the tarball to CRAN's form in its two steps, without a token that can write
