@@ -23,7 +23,6 @@ gh_stub
 export GH_REPO=owner/fakepkg GITHUB_SERVER_URL=https://github.example GITHUB_RUN_ID=99 GITHUB_RUN_NUMBER=5 \
   GITHUB_RUN_ATTEMPT=1 GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF_NAME=release-1.0.1
 SHA=0123456789abcdef0123456789abcdef01234567
-OTHER=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 TSHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 SUMMARY=$SCRATCH/summary.md
 
@@ -108,20 +107,23 @@ has "a short SHA is a usage error" "$out" "exit 2"
 
 section "submitted"
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
-  "[$(comment 52 'github-actions[bot]' "<!-- cran-submission-attempt: fakepkg 1.0.1 -->\n- Tarball: SHA-256 $TSHA"), $(comment 54 someone "<!-- cran-submission-attempt: fakepkg 1.0.1 -->\n$OTHER")]"
-out=$(run submitted 7 fakepkg 1.0.1 "$TSHA")
-has "a tarball an attempt uploaded is refused" "$out" "::error title=This tarball was submitted before::"
+  "[$(comment 52 'github-actions[bot]' "<!-- cran-submission-attempt: fakepkg 1.0.1 -->\n- Tarball: SHA-256 $TSHA"), $(comment 54 someone "<!-- cran-submission-attempt: fakepkg 1.0.2 -->")]"
+out=$(run submitted 7 fakepkg 1.0.1)
+has "a version an attempt submitted is refused, whatever the tarball" "$out" "::error title=fakepkg 1.0.1 was submitted before::"
 has "naming the attempt" "$out" "https://github.example/comment/52"
-out=$(DRY_RUN=true run submitted 7 fakepkg 1.0.1 "$TSHA")
+out=$(DRY_RUN=true run submitted 7 fakepkg 1.0.1)
 has "a dry run warns" "$out" "::warning title=Submitted before::"
 has "and passes" "$out" "exit 0"
-out=$(RESUBMIT=true run submitted 7 fakepkg 1.0.1 "$TSHA")
+out=$(RESUBMIT=true run submitted 7 fakepkg 1.0.1)
 has "resubmit lets it through" "$out" "exit 0"
 has "with a warning" "$out" "::warning title=Resubmission::"
-out=$(run submitted 7 fakepkg 1.0.1 "$OTHER")
-has "another tarball passes, even if someone else's comment names it" "$out" "exit 0"
-out=$(run submitted 7 fakepkg 1.0.0 "$TSHA")
-has "as does another version" "$out" "exit 0"
+out=$(run submitted 7 fakepkg 1.0.2)
+has "someone else's comment with the marker does not count" "$out" "exit 0"
+out=$(run submitted 7 fakepkg 1.0.0)
+has "nor does another version" "$out" "exit 0"
 is "and nothing is written" "$(cat "$SCRATCH/writes")" ""
+out=$(run submitted 8 fakepkg 1.0.1)
+has "comments that cannot be read fail, with GitHub's error" "$out" "Reading the comments of #8 failed: gh: Not Found (HTTP 404)"
+has "under their own title" "$out" "::error title=The checklist pull request's comments cannot be read::"
 
 done_testing

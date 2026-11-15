@@ -10,8 +10,8 @@
 #     or, where the token cannot read that, is an owner, member or collaborator;
 #     one carrying the marker by anyone else is named in a warning and ignored.
 #     Writes `pr` to GITHUB_OUTPUT. None, or more than one, fails when REQUIRE is `true`, and warns otherwise.
-#   submitted <pr> <package> <version> <sha256>
-#     Refuses a tarball that an earlier attempt of the version uploaded, as its attempt comment records,
+#   submitted <pr> <package> <version>
+#     Refuses a version that an earlier attempt comment records, whatever its commit or tarball,
 #     because an upload whose confirmation link was never followed does not show in CRAN's queue.
 #     RESUBMIT `true` lets it through with a warning; DRY_RUN `true` turns the refusal into a warning.
 #   status <pr> <key> <title>
@@ -27,7 +27,7 @@
 #   GH_TOKEN, GH_REPO    a token with `pull-requests: write` (`read` for `find`), and the repository, owner/name
 #   GH                   the gh command, default `gh`; release-report-test.sh stubs it
 #   REQUIRE              `find`: `true` fails without exactly one checklist pull request
-#   RESUBMIT, DRY_RUN    `submitted`: `true` lets a tarball submitted before through, or only warns about it
+#   RESUBMIT, DRY_RUN    `submitted`: `true` lets a version submitted before through, or only warns about it
 #   RESULTS              `status`: one `<job>=<result>` per line, as `needs.<job>.result` gives it
 #   DETAILS              `status`: Markdown appended below the job results, may be empty
 #   DRAFT_URL            `attempt`: the draft release
@@ -108,32 +108,42 @@ cmd_find() {
 }
 
 cmd_submitted() {
-  [ $# -eq 4 ] || usage
-  local pr=$1 pkg=$2 version=$3 sha256=$4
-  { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version" && [[ $sha256 =~ ^[0-9a-f]{64}$ ]]; } || usage
-  local marker="<!-- cran-submission-attempt: $pkg $version -->" earlier
+  [ $# -eq 3 ] || usage
+  local pr=$1 pkg=$2 version=$3
+  { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version"; } || usage
+  local marker="<!-- cran-submission-attempt: $pkg $version -->" earlier errf
+  errf=$(mktemp)
   # An upload whose confirmation link nobody followed does not show in CRAN's queue; the attempt comment does.
+  # Any earlier attempt of the version counts, whatever its commit or tarball: a rebuilt tarball differs in its digest.
   earlier=$("$gh" api --paginate "repos/$repo/issues/$pr/comments?per_page=100" \
-    --jq ".[] | select(.user.login == \"$bot\" and (.body | startswith(\"$marker\")) and (.body | contains(\"$sha256\"))) | .html_url" |
-    paste -s -d ' ' -)
+    --jq ".[] | select(.user.login == \"$bot\" and (.body | startswith(\"$marker\"))) | .html_url" 2>"$errf") || {
+    local err
+    err=$(head -n 1 "$errf")
+    rm -f "$errf"
+    fail "Attempt" "The checklist pull request's comments cannot be read" \
+      "Reading the comments of #$pr failed: $err. Nothing was drafted or uploaded." -- \
+      "Check that the calling job grants \`pull-requests: read\`, then dispatch the submission again."
+  }
+  rm -f "$errf"
+  earlier=$(printf '%s\n' "$earlier" | paste -s -d ' ' -)
   if [ -z "$earlier" ]; then
-    summary "- No earlier attempt of $pkg $version uploaded this tarball." ""
+    summary "- No earlier attempt of $pkg $version." ""
     return 0
   fi
   if [ "${RESUBMIT:-false}" = true ]; then
-    warn "Resubmission" "This tarball of $pkg $version was submitted before ($earlier); \`resubmit\` sends it again."
-    summary "- **Resubmission:** this tarball was submitted before ($earlier), and \`resubmit\` sends it again." ""
+    warn "Resubmission" "$pkg $version was submitted before ($earlier); \`resubmit\` submits it again."
+    summary "- **Resubmission:** $pkg $version was submitted before ($earlier), and \`resubmit\` submits it again." ""
     return 0
   fi
   if [ "${DRY_RUN:-false}" = true ]; then
-    warn "Submitted before" "This tarball of $pkg $version was submitted before ($earlier); a real run refuses unless \`resubmit\` is on."
+    warn "Submitted before" "$pkg $version was submitted before ($earlier); a real run refuses unless \`resubmit\` is on."
     summary "- **Submitted before:** $earlier; a real run refuses unless \`resubmit\` is on." ""
     return 0
   fi
-  fail "Attempt" "This tarball was submitted before" \
-    "An earlier attempt uploaded this tarball of $pkg $version, SHA-256 \`$sha256\`: $earlier. Nothing was drafted or uploaded." -- \
-    "If CRAN's confirmation email of that attempt arrived, follow its link instead of submitting again." \
-    "If CRAN never received it, or asks for the same tarball again, dispatch the submission with \`resubmit\` on."
+  fail "Attempt" "$pkg $version was submitted before" \
+    "An earlier attempt of $pkg $version is recorded: $earlier. Nothing was drafted or uploaded." -- \
+    "If CRAN's confirmation email of that attempt arrived and nobody followed its link, follow it instead of submitting again." \
+    "After a rejection and its fix, or if CRAN never received the upload, dispatch the submission with \`resubmit\` on."
 }
 
 cmd_status() {

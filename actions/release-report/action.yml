@@ -3,7 +3,7 @@
 name: "Release report"
 description: >
   Finds the release's checklist pull request by its marker (mode `find`),
-  refuses a tarball an earlier attempt uploaded (mode `submitted`),
+  refuses a version an earlier attempt submitted (mode `submitted`),
   keeps the workflow's one comment there, updated in place (mode `status`),
   or records a submission attempt in a new comment (mode `attempt`),
   with release-report.sh beside this file.
@@ -44,13 +44,13 @@ inputs:
     description: "`attempt`: the full SHA of the submitted commit"
     default: ""
   sha256:
-    description: "`submitted`, `attempt`: the tarball's SHA-256"
+    description: "`attempt`: the tarball's SHA-256"
     default: ""
   resubmit:
-    description: "`submitted`: `true` lets a tarball an earlier attempt uploaded through"
+    description: "`submitted`: `true` lets a version an earlier attempt submitted through"
     default: "false"
   dry-run:
-    description: "`submitted`: `true` only warns about a tarball an earlier attempt uploaded"
+    description: "`submitted`: `true` only warns about a version an earlier attempt submitted"
     default: "false"
   tarball-name:
     description: "`attempt`: the tarball's file name"
@@ -90,7 +90,7 @@ runs:
         script="$GITHUB_ACTION_PATH/release-report.sh"
         case "$MODE" in
           find) "$script" find "$PACKAGE" "$VERSION" ;;
-          submitted) "$script" submitted "$PR" "$PACKAGE" "$VERSION" "$SHA256" ;;
+          submitted) "$script" submitted "$PR" "$PACKAGE" "$VERSION" ;;
           status) "$script" status "$PR" "$KEY" "$TITLE" ;;
           attempt) "$script" attempt "$PR" "$PACKAGE" "$VERSION" "$SHA" "$SHA256" "$TARBALL_NAME" ;;
           *) echo "::error::Unknown mode: $MODE"; exit 2 ;;

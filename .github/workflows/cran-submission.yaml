@@ -6,7 +6,7 @@
 #   version  stops on a fork, a development version or dates that are not the submission date,
 #            and finds the checklist pull request (a real run fails without one)
 #   tarball  checks that the commit heads a branch of the repository, finds the push or dispatch run of the check workflow
-#            on it and its tarball artifact, downloads and verifies it, refuses a tarball an earlier attempt uploaded
+#            on it and its tarball artifact, downloads and verifies it, refuses a version an earlier attempt submitted
 #            (unless `resubmit`), and refuses while CRAN's incoming queue holds a submission of the package
 #   draft    a real run only: creates or updates the version's draft release with the tarball attached; writes no tag
 #   preview  a dry run only, with a read-only token: reports what `draft` would write
@@ -40,7 +40,7 @@ on:
         type: string
         default: ""
       resubmit:
-        description: "Upload a tarball that an earlier attempt of the version uploaded already, as CRAN never received it"
+        description: "Submit a version that an earlier attempt submitted already: after a rejection, or when CRAN never received it"
         required: false
         type: boolean
         default: false
@@ -136,7 +136,7 @@ jobs:
           token: ${{ github.token }}
 
       # An upload whose confirmation link nobody followed does not show in CRAN's queue; its attempt comment does.
-      - name: Refuse a tarball an earlier attempt uploaded
+      - name: Refuse a version an earlier attempt submitted
         if: needs.version.outputs.pr != ''
         uses: krlmlr/r-release-actions/actions/release-report@main
         with:
@@ -144,7 +144,6 @@ jobs:
           pr: ${{ needs.version.outputs.pr }}
           package: ${{ needs.version.outputs.package }}
           version: ${{ needs.version.outputs.version }}
-          sha256: ${{ steps.tarball.outputs.sha256 }}
           resubmit: ${{ inputs.resubmit }}
           dry-run: ${{ inputs.dry-run }}
           token: ${{ github.token }}
