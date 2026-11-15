@@ -1,7 +1,7 @@
 # r-release-actions
 
-Reusable GitHub workflows and composite actions that carry a CRAN release of an R package.
-A package's own workflows call them by tag.
+Reusable GitHub workflows and composite actions that take an R package through a CRAN release.
+A package's own workflows call them by a pinned release.
 
 **Status: under construction.**
 Nothing here is ready to call yet.
@@ -21,7 +21,7 @@ This README will summarize it as the workflows land.
 ## Versioning
 
 Releases of this repository are tagged `vX.Y.Z`.
-A caller pins either a tag or, preferably, the tag's full commit SHA with the tag in a comment:
+A caller pins a release tag, or its full commit SHA with the tag in a comment for stronger guarantees:
 
 ```yaml
 jobs:
