@@ -130,6 +130,8 @@ Each step writes what it read, checked and did to the run's summary, with how to
   Where the author's access cannot be read, as for an App's bot account, the author's association decides:
   a pull request by anyone but an owner, member or collaborator is ignored with a warning, so a stray marker blocks nothing,
   while an owner's, member's or collaborator's fails a real run with GitHub's error and is accepted with a warning on a dry run.
+  So a person with write access opens the checklist pull request: one opened by an App account such as a bot is ignored,
+  and a real run then fails with "No single checklist pull request", after a warning naming the ignored pull request.
 - **The dates**, set by the date commit before the checks, as described above: `Date:` in `DESCRIPTION` is required.
 - **The permissions** the calling job grants: `actions: read` to find and download the artifact,
   `contents: write` to draft the release, and `pull-requests: write` to report.
