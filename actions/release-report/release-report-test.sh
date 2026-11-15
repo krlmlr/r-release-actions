@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
 # Adapted from krlmlr/duckplyr's .github/actions/release-report/release-report-test.sh at f98ad13 (MIT).
-# Copyright (c) 2023 duckplyr authors; used under the MIT License, whose terms are in LICENSE.
 # Check release-report.sh offline, against a `gh` stub: nothing reaches GitHub.
 #
 #   1. `find` takes the open pull request carrying the version's marker by an owner, member or collaborator,

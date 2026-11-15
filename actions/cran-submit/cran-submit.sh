@@ -2,7 +2,6 @@
 # shellcheck source-path=SCRIPTDIR
 # Adapted from duckdb/duckdb-r's scripts/cran-submit.sh at ca768a9 (MIT): the upload stage only,
 # because the submission uploads the tarball the check workflow built and builds none of its own.
-# Copyright (c) 2018 Stichting DuckDB Foundation; used under the MIT License, whose terms are in LICENSE.
 # Upload a source tarball to CRAN the way `devtools:::upload_cran()` does.
 #
 #   upload [--dry-run] <tarball>

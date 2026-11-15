@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
 # Adapted from duckdb/duckdb-r's scripts/cran-submit-test.sh at ca768a9 (MIT).
-# Copyright (c) 2018 Stichting DuckDB Foundation; used under the MIT License, whose terms are in LICENSE.
 # Check cran-submit.sh offline, against a fake CRAN submission form on 127.0.0.1: nothing reaches CRAN.
 #
 #   1. `upload` sends the two POSTs of `devtools:::upload_cran()`, field for field and in order,

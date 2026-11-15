@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
 # Adapted from duckdb/duckdb-r's scripts/cran-lib.sh at ca768a9 (MIT).
-# Copyright (c) 2018 Stichting DuckDB Foundation; used under the MIT License, whose terms are in LICENSE.
 # Shared helpers for the scripts of the release actions: the log, the annotations, the step summary.
 #
 # Sourced, not run. The log folds each stage into a group and annotates outcomes

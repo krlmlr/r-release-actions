@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
 # Adapted from duckdb/duckdb-r's scripts/cran-submit-test.sh at ca768a9 (MIT).
-# Copyright (c) 2018 Stichting DuckDB Foundation; used under the MIT License, whose terms are in LICENSE.
 # Shared helpers for the offline tests beside the actions: assertions, a scratch directory, and the tally.
 #
 # Sourced, not run. Sets SCRATCH, removed on exit unless KEEP is non-empty,

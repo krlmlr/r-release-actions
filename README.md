@@ -150,11 +150,3 @@ Dependabot keeps such pins up to date in the calling repository.
 ## License
 
 MIT, see [`LICENSE`](LICENSE).
-
-Some files adapt code from other MIT-licensed projects and carry their copyright notice in their header:
-
-- from duckdb/duckdb-r, copyright 2018 Stichting DuckDB Foundation:
-  `actions/cran-lib/cran-lib.sh`, `actions/cran-lib/test-lib.sh`,
-  and `action.yml`, `cran-submit.sh` and `cran-submit-test.sh` in `actions/cran-submit/`;
-- from krlmlr/duckplyr, copyright 2023 duckplyr authors:
-  `action.yml`, `release-report.sh` and `release-report-test.sh` in `actions/release-report/`.

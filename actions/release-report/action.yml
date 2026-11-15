@@ -1,5 +1,4 @@
 # Adapted from krlmlr/duckplyr's .github/actions/release-report/action.yml at f98ad13 (MIT).
-# Copyright (c) 2023 duckplyr authors; used under the MIT License, whose terms are in LICENSE.
 name: "Release report"
 description: >
   Finds the release's checklist pull request by its marker (mode `find`),

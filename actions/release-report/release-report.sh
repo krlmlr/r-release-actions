@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
 # Adapted from krlmlr/duckplyr's .github/actions/release-report/release-report.sh at f98ad13 (MIT).
-# Copyright (c) 2023 duckplyr authors; used under the MIT License, whose terms are in LICENSE.
 # Report to the release's checklist pull request.
 #
 #   find <package> <version>
