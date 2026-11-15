@@ -21,7 +21,7 @@ No tag is written at submission: `vX.Y.Z` marks what CRAN accepted, is written o
 ## CRAN submission
 
 [`.github/workflows/cran-submission.yaml`](.github/workflows/cran-submission.yaml) submits the package at a given commit.
-It runs no check and builds nothing: dispatch it only once every check of that commit is green.
+It runs no check and builds nothing: it takes the tarball from a check run of that commit, and fails unless that run is green.
 
 ```yaml
 on:
@@ -50,7 +50,8 @@ Inputs:
 
 - `sha` (required): the full SHA of the commit to submit, the head of the branch the caller was dispatched on.
 - `dry-run` (required): read and verify everything, report what a real run would write and send, and write and send nothing.
-- `check-workflow`: the file name of the check workflow that built the tarball, `R-CMD-check.yaml` by default.
+- `check-workflow`: the file name of the check workflow that built the tarball;
+  by default `R-CMD-check.yaml`, the check workflow of the cynkra/cynkratemplate package template.
 - `check-run-id`: the check run to take the tarball from; by default, the newest run of `check-workflow` on `sha` that holds it.
 - `resubmit`: submit a version that an earlier attempt submitted already, after a rejection and its fix
   or when CRAN never received the upload; off by default.
@@ -68,6 +69,7 @@ What a run does, job by job:
   because GitHub resolves a commit that exists only in a fork as well.
   It finds the newest push or dispatch run of the check workflow on `sha` in the repository that holds the tarball,
   skipping pull request runs, which check a merge commit, and runs of a fork's branch; a given `check-run-id` must be such a run.
+  That run must have completed with success: otherwise the submission fails, naming the run, its conclusion and its URL.
   It downloads the file and verifies it:
   its SHA-256 is the artifact's digest, its name is `<package>_<version>.tar.gz`, and it holds that package and version.
   It refuses a version that an earlier attempt comment records, whatever that attempt's commit or tarball, unless `resubmit` is on,
@@ -97,7 +99,7 @@ A dry run holds no token that can write, and writes nothing: no release, no comm
 Its results are in the run's summary.
 It still fails where a real run would stop before writing: on a fork, a development version, a missing or doubled `NEWS.md` section,
 dates that differ, a missing `Date:`, a commit that heads no branch, a missing or mismatched tarball,
-an existing tag, or a published release.
+a check run that is not green, an existing tag, or a published release.
 Its read-only token may not list draft releases, so it does not reliably catch several drafts of the version.
 It only warns about a stale date, a missing checklist pull request, a version submitted before, and a queued submission.
 
@@ -106,17 +108,25 @@ Each step writes what it read, checked and did to the run's summary, with how to
 
 ### What the submission expects from the package
 
-- **The checked tarball.** A push or dispatch run of the check workflow on the commit keeps the source tarball it checked
-  as an artifact, uploaded with `actions/upload-artifact` v7 or later and `archive: false`, so that the artifact is the raw file
-  `<package>_<version>.tar.gz` and its digest is the file's SHA-256.
+- **The checked tarball.** This is the contract the check workflow implements:
+  - The check workflow builds the source tarball once per run, and each `R CMD check` job of the run checks that tarball,
+    not the checkout.
+  - Exactly one job of the run uploads the tarball, the job that ran `R CMD check` on it,
+    with `actions/upload-artifact` v7 or later, `archive: false`, and the file unchanged after the check.
+  - The artifact is the raw file, named exactly `<package>_<version>.tar.gz` as `R CMD build` names it,
+    so that its digest is the file's SHA-256.
+    Other jobs of the matrix may upload other artifacts, but no other artifact of the run has that name:
+    the submission takes the one artifact with that exact name, and fails if a run holds more than one.
+  - The run is a push or dispatch run of the commit in the package's own repository, and it completes with success.
   An artifact expires after at most 90 days, which the draft's asset outlives.
   The standard check workflow runs on a push only to `main` or `master`,
   so on a release branch someone dispatches the check workflow on the branch before dispatching the submission.
 - **The checklist pull request.** One open pull request tracks the release:
   the release branch's pull request into `main`, or an empty pull request beside a fix made on `main`.
   Its body carries the marker `<!-- release-checklist: <package> X.Y.Z -->`,
-  and its author has write access to the repository, or, where the workflow's token cannot read that,
-  is an owner, member or collaborator; a pull request carrying the marker by anyone else is ignored with a warning.
+  and its author has write access to the repository; a pull request carrying the marker by anyone else is ignored with a warning.
+  A real run fails if the workflow's token cannot read the author's access;
+  a dry run then warns and accepts an owner, member or collaborator.
 - **The dates**, set by the date commit before the checks, as described above: `Date:` in `DESCRIPTION` is required.
 - **The permissions** the calling job grants: `actions: read` to find and download the artifact,
   `contents: write` to draft the release, and `pull-requests: write` to report.
