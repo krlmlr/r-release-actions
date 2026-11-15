@@ -52,7 +52,8 @@ Inputs:
 - `dry-run` (required): read and verify everything, report what a real run would write and send, and write and send nothing.
 - `check-workflow`: the file name of the check workflow that built the tarball, `R-CMD-check.yaml` by default.
 - `check-run-id`: the check run to take the tarball from; by default, the newest run of `check-workflow` on `sha` that holds it.
-- `resubmit`: upload a tarball that an earlier attempt of the version uploaded already; off by default.
+- `resubmit`: submit a version that an earlier attempt submitted already, after a rejection and its fix
+  or when CRAN never received the upload; off by default.
 
 What a run does, job by job:
 
@@ -69,8 +70,9 @@ What a run does, job by job:
   skipping pull request runs, which check a merge commit, and runs of a fork's branch; a given `check-run-id` must be such a run.
   It downloads the file and verifies it:
   its SHA-256 is the artifact's digest, its name is `<package>_<version>.tar.gz`, and it holds that package and version.
-  It refuses a tarball whose upload an earlier attempt comment records, unless `resubmit` is on,
-  because an upload whose confirmation link nobody followed does not show in CRAN's queue.
+  It refuses a version that an earlier attempt comment records, whatever that attempt's commit or tarball, unless `resubmit` is on,
+  because an upload whose confirmation link nobody followed does not show in CRAN's queue,
+  and a rebuilt tarball of the same commit differs in its digest.
   It refuses while CRAN's incoming queue holds a submission of the package, which CRAN's policy forbids.
 - **draft**, on a real run only, keeps one draft GitHub release per version, titled `<package> X.Y.Z`, for the tag name `vX.Y.Z`.
   The first submission creates it, and each resubmission updates it:
@@ -95,8 +97,9 @@ A dry run holds no token that can write, and writes nothing: no release, no comm
 Its results are in the run's summary.
 It still fails where a real run would stop before writing: on a fork, a development version, a missing or doubled `NEWS.md` section,
 dates that differ, a missing `Date:`, a commit that heads no branch, a missing or mismatched tarball,
-an existing tag, a published release or several drafts.
-It only warns about a stale date, a missing checklist pull request, a tarball submitted before, and a queued submission.
+an existing tag, or a published release.
+Its read-only token may not list draft releases, so it does not reliably catch several drafts of the version.
+It only warns about a stale date, a missing checklist pull request, a version submitted before, and a queued submission.
 
 Only one submission per repository runs at a time, and none is cancelled.
 Each step writes what it read, checked and did to the run's summary, with how to resolve a failure.
@@ -107,6 +110,8 @@ Each step writes what it read, checked and did to the run's summary, with how to
   as an artifact, uploaded with `actions/upload-artifact` v7 or later and `archive: false`, so that the artifact is the raw file
   `<package>_<version>.tar.gz` and its digest is the file's SHA-256.
   An artifact expires after at most 90 days, which the draft's asset outlives.
+  The standard check workflow runs on a push only to `main` or `master`,
+  so on a release branch someone dispatches the check workflow on the branch before dispatching the submission.
 - **The checklist pull request.** One open pull request tracks the release:
   the release branch's pull request into `main`, or an empty pull request beside a fix made on `main`.
   Its body carries the marker `<!-- release-checklist: <package> X.Y.Z -->`,
