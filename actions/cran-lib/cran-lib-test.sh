@@ -41,6 +41,10 @@ b=two words"
 unset GITHUB_OUTPUT
 printf 'Package: p\nDescription: one\n    two\nVersion: 1.0\n' >"$SCRATCH/DESCRIPTION"
 is "a field with a continuation line is folded" "$(dcf_field Description "$SCRATCH/DESCRIPTION")" "one two"
+printf 'Package: p \r\nMaintainer: Jane Doe\r\n    <jane@example.org>\t\r\nDate: 2026-11-15\r\n' >"$SCRATCH/DESCRIPTION.crlf"
+is "trailing whitespace and CR are dropped" "$(dcf_field Package "$SCRATCH/DESCRIPTION.crlf")" "p"
+is "also on a continuation line" "$(dcf_field Maintainer "$SCRATCH/DESCRIPTION.crlf")" "Jane Doe <jane@example.org>"
+is "and on the last field" "$(dcf_field Date "$SCRATCH/DESCRIPTION.crlf")" "2026-11-15"
 is "a missing field is empty" "$(dcf_field Date "$SCRATCH/DESCRIPTION")" ""
 
 section "validators"

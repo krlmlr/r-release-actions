@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
 # Adapted from duckdb/duckdb-r's scripts/cran-submit-test.sh at ca768a9 (MIT).
+# Copyright (c) 2018 Stichting DuckDB Foundation; used under the MIT License, whose terms are in LICENSE.
 # Check cran-submit.sh offline, against a fake CRAN submission form on 127.0.0.1: nothing reaches CRAN.
 #
 #   1. `upload` sends the two POSTs of `devtools:::upload_cran()`, field for field and in order,
 #      with the tarball's own bytes, the maintainer from DESCRIPTION and the comment `<package> <version>`,
-#      and reports the next step: the confirmation e-mail.
+#      and reports the next step: the confirmation email.
 #   2. A 404 reads CRAN's maintenance message from the index page and fails with it.
 #   3. An upload without `pkg_id`, a confirmation without `submit=1`, a 500 and an unreachable form
 #      each fail before the next POST, with a "How to resolve" section in the step summary.
@@ -101,7 +102,7 @@ class Form(http.server.BaseHTTPRequestHandler):
             return self.page(500, "Internal Server Error")
         if "upload" in names:
             if m == "nopkgid":
-                return self.page(200, "The maintainer&#39;s e-mail address could not be verified.")
+                return self.page(200, "The maintainer&#39;s email address could not be verified.")
             return self.redirect("pkg_id=XYZ123")
         if m == "nosubmit":
             return self.page(200, "Please confirm that you have read the policy.")
@@ -203,7 +204,7 @@ has "and links the commit" "$summary" "### Upload to CRAN
 
 - $LINK"
 has "the log names the commit" "$out" "$(printf '  %-20s %s' commit: "$SUBMIT_SHA (release-x)")"
-has "and the next step" "$summary" "**Next step:** CRAN e-mailed jane@example.org; click the confirmation link in that e-mail to finish the submission."
+has "and the next step" "$summary" "**Next step:** CRAN emailed jane@example.org; click the confirmation link in that email to finish the submission."
 hasnt "and no failure" "$summary" "How to resolve"
 
 # --- 2: maintenance ------------------------------------------------------------
@@ -232,7 +233,7 @@ echo nopkgid >"$SCRATCH/mode"
 out=$(run upload "$TARBALL")
 has "it fails" "$out" "exit 1"
 has "naming the missing pkg_id" "$out" "::error title=No pkg_id from CRAN::"
-has "and showing CRAN's page, entities decoded" "$out" "The maintainer's e-mail address could not be verified."
+has "and showing CRAN's page, entities decoded" "$out" "The maintainer's email address could not be verified."
 is "after one POST" "$(grep -c '^POST' "$SCRATCH/requests")" 1
 summary=$(cat "$SUMMARY")
 has "the summary resolves it" "$summary" "#### How to resolve"

@@ -119,4 +119,14 @@ answer "POST $UPLOAD" '{"name": "fakepkg_1.0.1.tar.gz", "digest": "sha256:0000"}
 out=$(run)
 has "fails" "$out" "::error title=The attached tarball differs::"
 
+section "reads that fail go through the failure report"
+rm "$API/repos_owner_fakepkg_releases_per_page_100.json"
+out=$(run)
+has "unreadable releases fail with advice" "$out" "::error title=The releases cannot be read::"
+has "in the summary too" "$(cat "$SUMMARY")" "### Release: failed"
+rm "$API/repos_owner_fakepkg_git_matching-refs_tags_v1.0.1.json"
+out=$(run)
+has "unreadable tags fail with advice" "$out" "::error title=The tags cannot be read::"
+is "and nothing is written" "$(cat "$SCRATCH/writes")" ""
+
 done_testing

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
 # Adapted from duckdb/duckdb-r's scripts/cran-lib.sh at ca768a9 (MIT).
+# Copyright (c) 2018 Stichting DuckDB Foundation; used under the MIT License, whose terms are in LICENSE.
 # Shared helpers for the scripts of the release actions: the log, the annotations, the step summary.
 #
 # Sourced, not run. The log folds each stage into a group and annotates outcomes
@@ -120,9 +121,10 @@ output() { # <name> <value> [<name> <value>]...
   done
 }
 
-# One field of a DCF file, continuation lines folded into one.
+# One field of a DCF file, continuation lines folded into one, trailing whitespace and CR dropped.
 dcf_field() { # <field> <file>
   awk -v f="$1" '
+    { sub(/[ \t\r]+$/, "") }
     found && /^[ \t]/ { sub(/^[ \t]+/, " "); v = v $0; next }
     found { exit }
     index($0, f ":") == 1 { found = 1; v = substr($0, length(f) + 2); sub(/^[ \t]+/, "", v) }
@@ -137,3 +139,4 @@ sha256_of() {
 valid_package() { [[ $1 =~ ^[A-Za-z][A-Za-z0-9.]*[A-Za-z0-9]$ ]]; }
 valid_version() { [[ $1 =~ ^[0-9]+[.-][0-9]+([.-][0-9]+)*$ ]]; }
 valid_sha() { [[ $1 =~ ^[0-9a-f]{40}$ ]]; }
+valid_repo() { [[ $1 =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; }

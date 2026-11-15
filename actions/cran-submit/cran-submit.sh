@@ -2,6 +2,7 @@
 # shellcheck source-path=SCRIPTDIR
 # Adapted from duckdb/duckdb-r's scripts/cran-submit.sh at ca768a9 (MIT): the upload stage only,
 # because the submission uploads the tarball the check workflow built and builds none of its own.
+# Copyright (c) 2018 Stichting DuckDB Foundation; used under the MIT License, whose terms are in LICENSE.
 # Upload a source tarball to CRAN the way `devtools:::upload_cran()` does.
 #
 #   upload [--dry-run] <tarball>
@@ -13,7 +14,7 @@
 #     and succeeds when the final URL carries `submit=1`.
 #     CRAN then mails a confirmation link to the maintainer, and the submission counts once it is clicked.
 #     The comment is the single line `<package> <version>`;
-#     the maintainer's name and e-mail come from the `Maintainer:` field
+#     the maintainer's name and email come from the `Maintainer:` field
 #     that `R CMD build` writes from the `cre` person in `Authors@R`.
 #     A 404 means CRAN is closed for maintenance: the message on its index page is shown.
 #     With --dry-run, nothing is sent: the stage checks the tarball as for a real run,
@@ -110,9 +111,10 @@ check_response() { # <stage> <response file> <curl status>
   local stage=$1 response=$2 rc=$3
   if [ "$rc" -ne 0 ]; then
     cat "$response.err" >&2
-    fail "$stage" "CRAN could not be reached" "curl exited with status $rc posting to $url: $(head -n 1 "$response.err")" "$response.err" -- \
+    fail "$stage" "CRAN could not be reached" \
+      "curl exited with status $rc posting to $url: $(head -n 1 "$response.err")" "$response.err" -- \
       "Check the network and CRAN's status, then rerun this workflow." \
-      "If the connection broke after the upload, CRAN may have the package anyway: if the maintainer got CRAN's confirmation e-mail, follow it instead of resubmitting."
+      "If the connection broke after the upload, CRAN may have the package anyway: if the maintainer got CRAN's confirmation email, follow it instead of resubmitting."
   fi
   if [ "$http_code" = 404 ]; then
     local index=${url/index2/index}
@@ -121,7 +123,8 @@ check_response() { # <stage> <response file> <curl status>
       echo "(could not read $index)" >"$response.index"
     page_text "$response.index" >"$response.msg"
     cat "$response.msg"
-    fail "$stage" "CRAN submissions are closed" "The submission form answered HTTP 404, which is what it does while CRAN is closed for maintenance. CRAN's message: $(tr '\n' ' ' <"$response.msg")" "$response.msg" -- \
+    fail "$stage" "CRAN submissions are closed" \
+      "The submission form answered HTTP 404, which is what it does while CRAN is closed for maintenance. CRAN's message: $(tr '\n' ' ' <"$response.msg")" "$response.msg" -- \
       "Wait until CRAN reopens; its message, under Details here and in the log, usually says when." \
       "Then rerun this workflow; nothing was submitted."
   fi
@@ -181,7 +184,7 @@ cmd_upload() {
   val "package" "$pkg"
   val "version" "$version"
   val "maintainer name" "$maint_name"
-  val "maintainer e-mail" "$maint_email"
+  val "maintainer email" "$maint_email"
   val "tarball" "$base"
   val "size" "$size bytes ($(mib "$size"))"
   val "sha256" "$sha"
@@ -197,12 +200,14 @@ cmd_upload() {
     "- Submission form: $url"
 
   if [ "$base" != "${pkg}_${version}.tar.gz" ]; then
-    fail "Upload" "The tarball is misnamed" "CRAN expects \`${pkg}_${version}.tar.gz\` for the package inside, and the file is \`$base\`." -- \
+    fail "Upload" "The tarball is misnamed" \
+      "CRAN expects \`${pkg}_${version}.tar.gz\` for the package inside, and the file is \`$base\`." -- \
       "Upload the tarball the check workflow built, under the name \`R CMD build\` gave it."
   fi
   if [ -z "$pkg" ] || [ -z "$version" ] || [ -z "$maint_name" ] || [ -z "$maint_email" ]; then
-    fail "Upload" "DESCRIPTION is incomplete" "The tarball's DESCRIPTION gives package \`$pkg\`, version \`$version\`, maintainer \`$maint_name\` <\`$maint_email\`>, and all four are needed." -- \
-      "Check \`Authors@R\` in DESCRIPTION: exactly one person needs the role \`cre\` and an e-mail address; \`R CMD build\` writes the \`Maintainer:\` field from it."
+    fail "Upload" "DESCRIPTION is incomplete" \
+      "The tarball's DESCRIPTION gives package \`$pkg\`, version \`$version\`, maintainer \`$maint_name\` <\`$maint_email\`>, and all four are needed." -- \
+      "Check \`Authors@R\` in DESCRIPTION: exactly one person needs the role \`cre\` and an email address; \`R CMD build\` writes the \`Maintainer:\` field from it."
   fi
 
   if [ -n "$dry_run" ]; then
@@ -236,10 +241,11 @@ cmd_upload() {
   page_text "$work/upload.html" >"$work/upload.msg"
   if [ -z "$pkg_id" ]; then
     cat "$work/upload.msg"
-    fail "Upload" "No pkg_id from CRAN" "The upload answered HTTP $http_code at $final_url, which carries no \`pkg_id\`; CRAN did not accept the upload." "$work/upload.msg" -- \
+    fail "Upload" "No pkg_id from CRAN" \
+      "The upload answered HTTP $http_code at $final_url, which carries no \`pkg_id\`; CRAN did not accept the upload." "$work/upload.msg" -- \
       "Read CRAN's page, under Details here and in the log: when CRAN refuses the package, the maintainer or the tarball, it says why there." \
       "Otherwise CRAN's form may have changed: compare the fields this script sends with \`devtools:::upload_cran()\` (\`Rscript -e 'print(devtools:::upload_cran)'\`) and with the form at $cran_submit_page." \
-      "Nothing reached the confirmation step, so CRAN has sent no e-mail; rerun this workflow once the cause is fixed."
+      "Nothing reached the confirmation step, so CRAN has sent no email; rerun this workflow once the cause is fixed."
   fi
   endgroup
   summary "- Upload: HTTP $http_code, final URL $final_url, \`pkg_id\` \`$pkg_id\`"
@@ -259,15 +265,16 @@ cmd_upload() {
   if [ "$(query_param "$final_url" submit)" != 1 ]; then
     page_text "$work/submit.html" >"$work/submit.msg"
     cat "$work/submit.msg"
-    fail "Confirm" "CRAN did not confirm the submission" "The package was uploaded as \`pkg_id\` $pkg_id, but the confirmation answered HTTP $http_code at $final_url, without \`submit=1\`; CRAN has not e-mailed the maintainer." "$work/submit.msg" -- \
+    fail "Confirm" "CRAN did not confirm the submission" \
+      "The package was uploaded as \`pkg_id\` $pkg_id, but the confirmation answered HTTP $http_code at $final_url, without \`submit=1\`; CRAN has not emailed the maintainer." "$work/submit.msg" -- \
       "Read CRAN's page, under Details here and in the log, for the reason." \
       "Rerun this workflow, which uploads the package again; or submit the tarball kept as this run's artifact by hand at $cran_submit_page, with the comment \`$comment\`." \
       "If this keeps happening, CRAN's form may have changed: compare with \`devtools:::upload_cran()\`."
   fi
   endgroup
   summary "- Confirmation: HTTP $http_code, final URL $final_url" "" \
-    "**Next step:** CRAN e-mailed $maint_email; click the confirmation link in that e-mail to finish the submission." ""
-  notice "Submitted to CRAN" "$pkg $version (pkg_id $pkg_id). CRAN e-mailed $maint_email; click the confirmation link in that e-mail to finish the submission."
+    "**Next step:** CRAN emailed $maint_email; click the confirmation link in that email to finish the submission." ""
+  notice "Submitted to CRAN" "$pkg $version (pkg_id $pkg_id). CRAN emailed $maint_email; click the confirmation link in that email to finish the submission."
 }
 
 # What a real run would post, printed and reported; sends nothing.
@@ -309,7 +316,7 @@ dry_run_report() {
     "" \
     "   It succeeds when the final URL carries \`submit=1\`." \
     "" \
-    "**Next step:** to submit, dispatch the submission again on the same commit with \`dry-run\` off. CRAN then e-mails $maint_email, and the submission counts once the link in that e-mail is clicked." ""
+    "**Next step:** to submit, dispatch the submission again on the same commit with \`dry-run\` off. CRAN then emails $maint_email, and the submission counts once the link in that email is clicked." ""
   notice "Dry run" "Nothing was sent to CRAN. A real run uploads $base ($size bytes, sha256 $sha) for $pkg $version, maintainer $maint_name <$maint_email>, with the comment \"$comment\"."
 }
 

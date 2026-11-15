@@ -54,7 +54,12 @@ val "tag name" "$tag"
 val "target" "$sha"
 val "asset" "$base (sha256 $sha256)"
 
-existing=$("$gh" api "repos/$repo/git/matching-refs/tags/$tag" --jq ".[] | select(.ref == \"refs/tags/$tag\") | .object.sha")
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+existing=$("$gh" api "repos/$repo/git/matching-refs/tags/$tag" --jq ".[] | select(.ref == \"refs/tags/$tag\") | .object.sha") ||
+  fail "Release" "The tags cannot be read" "Reading the tags \`$tag\` of $repo failed. Nothing was drafted or uploaded." -- \
+    "Check that the calling job grants \`contents: read\` or \`write\`, then dispatch the submission again."
 if [ -n "$existing" ]; then
   fail "Release" "The tag $tag exists" \
     "The tag \`$tag\` points to \`$existing\`. It is written once, when CRAN has accepted the version, so this version cannot be submitted again. Nothing was drafted or uploaded." -- \
@@ -62,13 +67,14 @@ if [ -n "$existing" ]; then
     "If the tag was written by mistake and never left this repository's clones, a maintainer deletes it, then dispatches the submission again."
 fi
 
+select_releases=".[] | select(.tag_name == \"$tag\" or ((.body // \"\") | contains(\"$marker\")))"
 "$gh" api --paginate "repos/$repo/releases?per_page=100" \
-  --jq ".[] | select(.tag_name == \"$tag\" or ((.body // \"\") | contains(\"$marker\"))) | [.id, (if .draft then \"draft\" else \"published\" end), .html_url, .upload_url] | @tsv" \
-  >"${TMPDIR:-/tmp}/cran-draft.$$"
-releases=$(cat "${TMPDIR:-/tmp}/cran-draft.$$")
-rm -f "${TMPDIR:-/tmp}/cran-draft.$$"
-published=$(printf '%s\n' "$releases" | awk -F '\t' '$2 == "published" { print $3 }')
-drafts=$(printf '%s\n' "$releases" | awk -F '\t' '$2 == "draft"')
+  --jq "$select_releases | [.id, (if .draft then \"draft\" else \"published\" end), .html_url, .upload_url] | @tsv" \
+  >"$work/releases" ||
+  fail "Release" "The releases cannot be read" "Reading the releases of $repo failed. Nothing was drafted or uploaded." -- \
+    "Check that the calling job grants \`contents: read\` or \`write\`, then dispatch the submission again."
+published=$(awk -F '\t' '$2 == "published" { print $3 }' "$work/releases")
+drafts=$(awk -F '\t' '$2 == "draft"' "$work/releases")
 ndrafts=$(printf '%s' "$drafts" | grep -c . || true)
 if [ -n "$published" ]; then
   fail "Release" "$title is published" \
@@ -77,13 +83,11 @@ if [ -n "$published" ]; then
     "If it was published by mistake, a maintainer turns it back into a draft, then dispatches the submission again."
 fi
 if [ "$ndrafts" -gt 1 ]; then
-  printf '%s\n' "$drafts" | cut -f3 >"${TMPDIR:-/tmp}/cran-draft-urls.$$"
-  failure "Release" "Several drafts of $title" \
+  printf '%s\n' "$drafts" | cut -f3 >"$work/urls"
+  fail "Release" "Several drafts of $title" \
     "$ndrafts draft releases carry the tag name \`$tag\` or the marker, and there is one per version. Nothing was drafted or uploaded." \
-    "${TMPDIR:-/tmp}/cran-draft-urls.$$" -- \
+    "$work/urls" -- \
     "Delete the drafts that are not this version's record, keeping the one with the earlier attempts' notes, then dispatch the submission again."
-  rm -f "${TMPDIR:-/tmp}/cran-draft-urls.$$"
-  exit 1
 fi
 if [ "$ndrafts" -eq 1 ]; then
   action=update
@@ -131,7 +135,8 @@ val "release" "$url"
     [ -n "$aid" ] || continue
     val "replaced asset" "$aname"
     "$gh" api -X DELETE "repos/$repo/releases/assets/$aid" >/dev/null ||
-      fail "Release" "The earlier tarball could not be removed" "Deleting \`$aname\` from the draft $url failed. Nothing was sent to CRAN." -- \
+      fail "Release" "The earlier tarball could not be removed" \
+        "Deleting \`$aname\` from the draft $url failed. Nothing was sent to CRAN." -- \
         "Dispatch the submission again; it updates the same draft."
   done
 asset=$("$gh" api -X POST "${upload_url%%\{*}?name=$base" -H "Content-Type: application/gzip" --input "$tarball" \
@@ -140,7 +145,8 @@ asset=$("$gh" api -X POST "${upload_url%%\{*}?name=$base" -H "Content-Type: appl
     "Dispatch the submission again; it updates the same draft."
 IFS=$'\t' read -r aname adigest <<<"$asset"
 if [ -n "$adigest" ] && [ "$adigest" != "sha256:$sha256" ]; then
-  fail "Release" "The attached tarball differs" "GitHub records the asset's digest \`$adigest\`, and the tarball's is \`sha256:$sha256\`. Nothing was sent to CRAN." -- \
+  fail "Release" "The attached tarball differs" \
+    "GitHub records the asset's digest \`$adigest\`, and the tarball's is \`sha256:$sha256\`. Nothing was sent to CRAN." -- \
     "Dispatch the submission again; it replaces the asset."
 fi
 val "asset" "$aname${adigest:+ ($adigest)}"

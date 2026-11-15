@@ -71,7 +71,8 @@ group "Dates: NEWS.md heading and DESCRIPTION"
 # The headings of the version's sections, with or without a date.
 awk -v h="# $pkg $version" '
   { sub(/[ \t\r]+$/, "") }
-  $0 == h || (index($0, h " (") == 1 && substr($0, length(h) + 1) ~ /^ \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)$/) { print NR ": " $0 }
+  $0 == h { print NR ": " $0; next }
+  index($0, h " (") == 1 && substr($0, length(h) + 1) ~ /^ \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)$/ { print NR ": " $0 }
 ' "$pkgdir/NEWS.md" >"$out/headings"
 n=$(wc -l <"$out/headings" | tr -d ' ')
 if [ "$n" -ne 1 ]; then
@@ -88,7 +89,8 @@ val "today (UTC)" "$today"
   fail "Dates" "The NEWS.md heading has no date" "The section is headed \`$heading\`, without the submission date." -- \
     "The date commit sets both dates before the checks: head the section \`# $pkg $version ($today)\` and set \`Date: $today\` in \`DESCRIPTION\`, then check that commit again."
 [ "$news_date" = "$desc_date" ] ||
-  fail "Dates" "The dates differ" "\`NEWS.md\` dates the release \`$news_date\`, and \`DESCRIPTION\`'s \`Date:\` is \`${desc_date:-(none)}\`." -- \
+  fail "Dates" "The dates differ" \
+    "\`NEWS.md\` dates the release \`$news_date\`, and \`DESCRIPTION\`'s \`Date:\` is \`${desc_date:-(none)}\`." -- \
     "The date commit sets both to the submission date: make it, check that commit, and dispatch the submission on it."
 days=$((($(date -u -d "$today" +%s) - $(date -u -d "$news_date" +%s)) / 86400))
 if [ "$days" -gt 1 ] || [ "$days" -lt -1 ]; then

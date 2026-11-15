@@ -80,7 +80,7 @@ if [ ${#found[@]} -gt 0 ]; then
     "CRAN's incoming queue holds $(paste -s -d ' ' "$work/found"), and CRAN's policy forbids a submission while an earlier one is pending. Nothing was drafted or uploaded." \
     "$work/found" -- \
     "Wait until CRAN has decided on the earlier submission, then dispatch the submission again." \
-    "If CRAN waits for an answer from the maintainer, the folder \`waiting/\` says so; reply to CRAN's e-mail first."
+    "If CRAN waits for an answer from the maintainer, the folder \`waiting/\` says so; reply to CRAN's email first."
 fi
 summary "- No submission of $pkg in $n folders of $base (\`archive/\` skipped)." ""
 notice "CRAN's incoming queue" "No submission of $pkg is queued."
