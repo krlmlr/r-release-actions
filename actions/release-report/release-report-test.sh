@@ -253,11 +253,12 @@ sed -n '/^prs=/,/^fi$/p' "$SUMMARY" >"$SCRATCH/lookup.sh"
 echo 'echo "pr=$prs"' >>"$SCRATCH/lookup.sh"
 UPULLS="repos/upowner/fakepkg/pulls?state=open&per_page=100"
 lookup() { local rc=0; bash -euo pipefail "$SCRATCH/lookup.sh" 2>&1 || rc=$?; echo "exit $rc"; }
-answer "$UPULLS" "[$(pull 21 MEMBER upmaint "$MARK\nChecklist" User upowner/fakepkg), $(pull 26 NONE outsider "$MARK" User other/fakepkg),
+answer "$UPULLS" "[{\"number\": 27, \"user\": {\"login\": \"upmaint\", \"type\": \"User\"}, \"body\": null}, $(pull 28 MEMBER upmaint '' User upowner/fakepkg),
+  $(pull 21 MEMBER upmaint "$MARK\nChecklist" User upowner/fakepkg), $(pull 26 NONE outsider "$MARK" User other/fakepkg),
   $(pull 22 NONE upmaint "Notes\n$MARK" User upowner/fakepkg),
   $(pull 23 NONE 'dependabot[bot]' "$MARK" Bot upowner/fakepkg), $(pull 24 NONE 'some-app[bot]' "$MARK" Bot someone/fakepkg)]"
 out=$(lookup)
-is "the printed lookup takes the one checklist pull request of the parent, filtered as find filters, an outsider's left out" "$out" "pr=21
+is "the printed lookup takes the parent's one checklist pull request, filtered as find filters, past bodiless ones" "$out" "pr=21
 exit 0"
 answer "$UPULLS" "[$(pull 22 NONE upmaint "Notes\n$MARK" User upowner/fakepkg)]"
 out=$(lookup)

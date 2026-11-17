@@ -49,8 +49,9 @@ set -euo pipefail
 # shellcheck source=../cran-lib/cran-lib.sh
 . "$(dirname "$0")/../cran-lib/cran-lib.sh"
 
-# The first line of a pull request's body, without a byte order mark and surrounding whitespace, as a jq filter.
-first_line_jq='(.body // "") | split("\n")[0] | sub("^[\\s\ufeff]+"; "") | sub("\\s+$"; "")'
+# The first line of a pull request's body, without a byte order mark and surrounding whitespace, as a jq filter;
+# an empty or missing body has an empty first line, as `"" | split("\n")` is empty.
+first_line_jq='((.body // "") | split("\n")[0] // "") | sub("^[\\s\ufeff]+"; "") | sub("\\s+$"; "")'
 
 usage() {
   sed -n '3,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
