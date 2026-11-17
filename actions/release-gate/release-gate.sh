@@ -6,14 +6,21 @@
 #     Every check runs, and the step fails when any of them fails, each with its own error:
 #     - the version has exactly three components;
 #     - DESCRIPTION has no `Remotes` field;
-#     - no dependency in Depends, Imports or LinkingTo needs a development version, one with four or more components,
-#       or names a source as `Remotes` does (`owner/repo`, `github::owner/repo`, `url::...`);
+#     - CRAN's package database can be read; the next checks use it;
+#     - no dependency in Depends, Imports, LinkingTo or Suggests names a source as `Remotes` does
+#       (`owner/repo`, `github::owner/repo`, `url::...`), or requires a version that CRAN does not have:
+#       higher than CRAN's for `>=` and `>`, another for `==`. Base packages pass; recommended ones are on CRAN.
+#       A package not on CRAN fails, unless DESCRIPTION has `biocViews`, which makes it a Bioconductor package,
+#       or it is in Suggests and DESCRIPTION has `Additional_repositories`, as CRAN's policy allows; both are reported;
 #     - NEWS.md has exactly one section for the version, found by `# <package> <version>` with the date optional,
-#       whose heading's date is DESCRIPTION's `Date:`, at most 31 days old and at most a day ahead (UTC);
+#       outside code fences, whose heading's date is DESCRIPTION's `Date:`, at most 31 days old and at most a day ahead (UTC);
+#       without one, the error names the headings that mention the version;
 #     - CRAN's package database sets no `Deadline` for the package, which a package not on CRAN passes.
+#     `Additional_repositories` is reported, not enforced.
 #     Writes `package`, `version`, `passed` (`true` or `false`) and `report`, a Markdown list, to GITHUB_OUTPUT.
 #   report <package dir> <out dir> [<tarball>]
-#     Reports, and never fails on a finding: help pages documenting functions without `\value`,
+#     Reports, and never fails on a finding: a setup step that failed (SETUP),
+#     a checked tarball that could not be taken (TARBALL_OUTCOME), help pages documenting functions without `\value`,
 #     a README.md older than README.Rmd in the git history or different from a fresh knit,
 #     URLs that urlchecker flags, words that spelling flags, and, with a tarball,
 #     `R CMD check --as-cran --no-manual` on it with CRAN's incoming checks.
@@ -24,6 +31,8 @@
 #   release-gate.sh report <package dir> <out dir> [<tarball>]
 #
 # Environment:
+#   SETUP                `report`: one `<setup step>=<outcome>` per line, as `steps.<id>.outcome` gives it
+#   TARBALL_OUTCOME      `report`: the outcome of the step that takes the checked tarball; empty when there was none
 #   TODAY                the date to compare with, YYYY-MM-DD; default today in UTC (the tests set it)
 #   CRAN_DB_URL          CRAN's package database, default https://cran.r-project.org/web/packages/packages.rds;
 #                        release-gate-test.sh points it at a local file
@@ -55,17 +64,68 @@ row <- db[db$Package == args[[2]], , drop = FALSE]
 d <- if ("Deadline" %in% names(row)) row$Deadline[1] else NA
 cat(if (nrow(row) == 0) "absent" else if (is.na(d) || !nzchar(d)) "none" else d, "\n", sep = "")
 '
+# The dependencies of <tsv> (field, name, operator, version, entry) that CRAN cannot satisfy, as
+# `fail` or `note`, field, entry and reason, tab-separated; <bioc> and <additional> are `yes` or `no`.
+# shellcheck disable=SC2016  # R code
+r_deps='
+args <- commandArgs(TRUE)
+db <- as.data.frame(readRDS(args[[1]]), stringsAsFactors = FALSE)
+if (!all(c("Package", "Version") %in% names(db))) stop("the database has no Package or Version column")
+deps <- utils::read.delim(args[[2]], header = FALSE, colClasses = "character", quote = "", na.strings = character(),
+  col.names = c("field", "name", "op", "ver", "entry"))
+bioc <- args[[3]] == "yes"
+additional <- args[[4]] == "yes"
+base <- c("R", "base", "compiler", "datasets", "graphics", "grDevices", "grid", "methods", "parallel", "splines",
+  "stats", "stats4", "tcltk", "tools", "utils")
+say <- function(kind, d, why) cat(kind, "\t", d$field, "\t", d$entry, "\t", why, "\n", sep = "")
+for (i in seq_len(nrow(deps))) {
+  d <- deps[i, ]
+  if (d$name %in% base) next
+  cran <- db$Version[db$Package == d$name]
+  if (length(cran) == 0) {
+    if (bioc) say("note", d, "not on CRAN, taken to be on Bioconductor as `biocViews` says")
+    else if (additional && d$field == "Suggests") say("note", d, "not on CRAN, to come from `Additional_repositories`")
+    else say("fail", d, "not on CRAN")
+    next
+  }
+  if (!d$op %in% c(">=", ">", "==")) next
+  need <- tryCatch(package_version(d$ver), error = function(e) NULL)
+  if (is.null(need)) { say("fail", d, "no valid version"); next }
+  have <- package_version(cran[[1]])
+  if ((d$op == ">=" && need > have) || (d$op == ">" && need >= have) || (d$op == "==" && need != have))
+    say("fail", d, paste0("CRAN has ", cran[[1]]))
+}
+'
 
-# A multi-line output, between a delimiter that the value cannot contain.
-output_file() { # <name> <file>
+# A multi-line output of at most <bytes> bytes, between a delimiter that the value cannot contain.
+# The report reaches the comment through an environment variable, which holds at most 128 KiB,
+# so a longer one is cut at a line, closing a fence or collapsed block left open, and saying so.
+output_file() { # <name> <file> <bytes>
   [ -n "${GITHUB_OUTPUT:-}" ] || return 0
   local delim
   delim="EOF_$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
-  { echo "$1<<$delim"; cat "$2"; echo "$delim"; } >>"$GITHUB_OUTPUT"
+  {
+    echo "$1<<$delim"
+    if [ "$(wc -c <"$2")" -le "$3" ]; then
+      cat "$2"
+    else
+      head -c "$3" "$2" | sed '$d' | awk '
+        { print }
+        /^````/ { fence = !fence }
+        /^<details>/ { open++ }
+        /^<\/details>/ { open-- }
+        END {
+          if (fence) print "````"
+          print ""
+          print "[Cut to fit: the run'"'"'s summary page has the rest.]"
+          for (; open > 0; open--) { print ""; print "</details>" }
+        }'
+    fi
+    echo "$delim"
+  } >>"$GITHUB_OUTPUT"
 }
 
-# At most <n> lines of a file, each cut at 300 characters, then a line saying how many were left out:
-# the report reaches the comment through an environment variable, which holds at most 128 KiB.
+# At most <n> lines of a file, each cut at 300 characters, then a line saying how many were left out.
 excerpt() { # <file> <n>
   awk -v n="$2" '
     NR <= n { print (length($0) > 300 ? substr($0, 1, 300) " [...]" : $0) }
@@ -78,6 +138,11 @@ details() { # <summary> <file>
   printf '\n<details><summary>%s</summary>\n\n````text\n%s\n````\n\n</details>\n' "$1" "$(excerpt "$2" "$max_lines")"
 }
 
+# `yes` when a DCF file has the field, `no` otherwise.
+has_field() { # <field> <file>
+  if grep -q "^$1:" "$2"; then echo yes; else echo no; fi
+}
+
 # --- hard -----------------------------------------------------------------
 
 cmd_hard() {
@@ -88,6 +153,10 @@ cmd_hard() {
   : >"$report"
   pass() { # <check> <text>
     printf -- '- ✅ **%s:** %s\n' "$1" "$2" >>"$report"
+  }
+  note() { # <check> <text>
+    printf -- '- ⚠️ **%s:** %s\n' "$1" "$2" >>"$report"
+    warn "$1" "$2"
   }
   # A failed check: annotated and reported as `failure` does, then the run goes on to the next check.
   flunk() { # <check> <title> <message> [<excerpt>] -- <advice>...
@@ -133,32 +202,78 @@ cmd_hard() {
   fi
   endgroup
 
+  group "CRAN's package database"
+  local db_url=${CRAN_DB_URL:-https://cran.r-project.org/web/packages/packages.rds} db=$out/packages.rds
+  val "database" "$db_url"
+  if ! curl --silent --show-error --fail --location --connect-timeout 30 --max-time 300 \
+    --output "$db" "$db_url" 2>"$out/curl.err"; then
+    db=''
+    flunk "CRAN database" "CRAN's package database cannot be read" \
+      "Reading $db_url failed: $(head -n 1 "$out/curl.err"), so the dependencies and a deadline cannot be checked." \
+      "$out/curl.err" -- \
+      "Run the gate again; if CRAN is down, wait until it is back."
+  fi
+  endgroup
+
   group "Dependencies"
   local field
-  for field in Depends Imports LinkingTo; do
-    dcf_field "$field" "$desc" | tr ',' '\n' | awk -v field="$field" '
+  : >"$out/deps.remote"
+  for field in Depends Imports LinkingTo Suggests; do
+    dcf_field "$field" "$desc" | tr ',' '\n' | awk -v field="$field" -v remote="$out/deps.remote" '
       { gsub(/^[ \t]+|[ \t]+$/, "") }
       NF == 0 { next }
       {
         name = $0
         sub(/[ \t]*\(.*$/, "", name)
+        op = ""
         ver = ""
         if (match($0, /\([^)]*\)/)) {
           ver = substr($0, RSTART + 1, RLENGTH - 2)
-          sub(/^[ \t]*[<>=!]+[ \t]*/, "", ver)
-          sub(/[ \t]+$/, "", ver)
+          gsub(/^[ \t]+|[ \t]+$/, "", ver)
+          if (match(ver, /^[<>=!]+/)) { op = substr(ver, 1, RLENGTH); ver = substr(ver, RLENGTH + 1) }
+          sub(/^[ \t]+/, "", ver)
         }
-        if (name ~ /[\/:@]/) print field ": `" $0 "`, a source outside CRAN"
-        else if (ver != "" && split(ver, parts, /[.-]/) > 3) print field ": `" $0 "`, a development version"
+        if (name ~ /[\/:@]/) print field "\t`" $0 "`\ta source outside CRAN" >>remote
+        else print field "\t" name "\t" op "\t" ver "\t" $0
       }'
-  done >"$out/deps"
-  cat "$out/deps"
+  done >"$out/deps.tsv"
+  local checked="against CRAN's package database"
+  if [ -z "$db" ]; then
+    : >"$out/deps.cran"
+    checked="for sources outside CRAN only, as CRAN's package database cannot be read"
+  elif [ ! -s "$out/deps.tsv" ]; then
+    : >"$out/deps.cran"
+  elif ! "$rscript" --vanilla -e "$r_deps" "$db" "$out/deps.tsv" \
+    "$(has_field biocViews "$desc")" "$(has_field Additional_repositories "$desc")" >"$out/deps.cran" 2>"$out/r.err"; then
+    : >"$out/deps.cran"
+    checked="for sources outside CRAN only"
+    flunk "Dependencies" "The dependencies cannot be checked against CRAN" \
+      "Reading CRAN's package database with R failed: $(tail -n 1 "$out/r.err")." "$out/r.err" -- \
+      "Run the gate again; if it fails again, the database's format has changed, and this check needs to follow."
+  fi
+  # The failures: sources outside CRAN, and versions CRAN does not have.
+  {
+    awk -F '\t' '{ print $1 ": " $2 ", " $3 }' "$out/deps.remote"
+    awk -F '\t' '$1 == "fail" { print $2 ": `" $3 "`, " $4 }' "$out/deps.cran"
+  } >"$out/deps"
+  awk -F '\t' '$1 == "note" { print $2 ": `" $3 "`, " $4 }' "$out/deps.cran" >"$out/deps.notes"
+  cat "$out/deps" "$out/deps.notes"
   if [ -s "$out/deps" ]; then
     flunk "Dependencies" "A dependency is not on CRAN" \
-      "$(paste -s -d ';' "$out/deps" | sed 's/;/; /g'). CRAN installs only released versions from CRAN." "$out/deps" -- \
-      "Require released versions of the dependencies, at most three components each, and wait for any that is not on CRAN yet."
-  else
-    pass "Dependencies" "Depends, Imports and LinkingTo need no development version and no source outside CRAN."
+      "$(paste -s -d ';' "$out/deps" | sed 's/;/; /g'). CRAN installs dependencies only from CRAN, in its current versions." \
+      "$out/deps" -- \
+      "Require versions of the dependencies that CRAN has, and wait for any that is not on CRAN yet."
+  elif [ "$checked" != "for sources outside CRAN only" ]; then
+    pass "Dependencies" "Depends, Imports, LinkingTo and Suggests need nothing outside CRAN, checked $checked."
+  fi
+  if [ -s "$out/deps.notes" ]; then
+    note "Dependencies" "$(paste -s -d ';' "$out/deps.notes" | sed 's/;/; /g')."
+  fi
+  if grep -q '^Additional_repositories:' "$desc"; then
+    local repos
+    repos=$(dcf_field Additional_repositories "$desc" | sed 's/^ *//')
+    note "Additional repositories" "\`Additional_repositories: $repos\`: CRAN accepts it for packages in Suggests or Enhances; \
+check that each repository is reachable and needed."
   fi
   endgroup
 
@@ -170,16 +285,31 @@ cmd_hard() {
     flunk "NEWS.md" "No NEWS.md" "The checkout has no \`NEWS.md\`, so the release has no notes." -- \
       "Write the version's section in \`NEWS.md\`, headed \`# $pkg $version ($today)\`."
   else
-    # The headings of the version's sections, with or without a date.
-    awk -v h="# $pkg $version" '
+    # The headings of the version's sections, with or without a date, and, in <out>/near, the other headings
+    # that mention the version; neither inside code fences.
+    awk -v h="# $pkg $version" -v v="$version" -v near="$out/near" '
       { sub(/[ \t\r]+$/, "") }
+      /^(```|~~~)/ { fence = !fence; next }
+      fence { next }
       $0 == h { print NR ": " $0; next }
-      index($0, h " (") == 1 && substr($0, length(h) + 1) ~ /^ \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)$/ { print NR ": " $0 }
+      index($0, h " (") == 1 && substr($0, length(h) + 1) ~ /^ \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)$/ { print NR ": " $0; next }
+      /^#/ && (i = index($0, v)) > 0 {
+        before = substr($0, i - 1, 1)
+        after = substr($0, i + length(v), 1)
+        if (before !~ /[0-9.-]/ && after !~ /[0-9.-]/) print NR ": " $0 >near
+      }
     ' "$pkgdir/NEWS.md" >"$out/headings"
+    touch "$out/near"
     n=$(wc -l <"$out/headings" | tr -d ' ')
     heading=$(cut -d' ' -f2- "$out/headings" | head -n 1)
     news_date=$(printf '%s\n' "$heading" | sed -n 's/^.* (\([0-9-]*\))$/\1/p')
-    if [ "$n" -ne 1 ]; then
+    if [ "$n" -eq 0 ] && [ -s "$out/near" ]; then
+      flunk "NEWS.md" "No NEWS.md section for $pkg $version" \
+        "\`NEWS.md\` has no section headed \`# $pkg $version\`, only headings that mention the version: \
+$(awk -v q=$'\x60' '{ sub(/^[0-9]+: /, ""); printf "%s%s%s%s", (NR > 1 ? "; " : ""), q, $0, q }' "$out/near")." "$out/near" -- \
+        "Head the version's section \`# $pkg $version ($today)\`: one \`#\`, the package's name, the version without \`v\`, \
+and the date in parentheses, each after one space."
+    elif [ "$n" -ne 1 ]; then
       flunk "NEWS.md" "No single NEWS.md section for $pkg $version" \
         "\`NEWS.md\` has $n sections headed \`# $pkg $version\`, and the release needs exactly one." "$out/headings" -- \
         "Head the version's section \`# $pkg $version ($today)\`, once."
@@ -208,14 +338,10 @@ cmd_hard() {
   endgroup
 
   group "CRAN deadline"
-  local db_url=${CRAN_DB_URL:-https://cran.r-project.org/web/packages/packages.rds} deadline
-  val "database" "$db_url"
-  if ! curl --silent --show-error --fail --location --connect-timeout 30 --max-time 300 \
-    --output "$out/packages.rds" "$db_url" 2>"$out/curl.err"; then
-    flunk "CRAN deadline" "CRAN's package database cannot be read" \
-      "Reading $db_url failed: $(head -n 1 "$out/curl.err"), so whether CRAN set a deadline is unknown." "$out/curl.err" -- \
-      "Run the gate again; if CRAN is down, wait until it is back."
-  elif ! deadline=$("$rscript" --vanilla -e "$r_deadline" "$out/packages.rds" "$pkg" 2>"$out/r.err"); then
+  local deadline
+  if [ -z "$db" ]; then
+    say "Not checked: CRAN's package database cannot be read."
+  elif ! deadline=$("$rscript" --vanilla -e "$r_deadline" "$db" "$pkg" 2>"$out/r.err"); then
     flunk "CRAN deadline" "CRAN's package database cannot be read" \
       "Reading the downloaded database with R failed: $(tail -n 1 "$out/r.err")." "$out/r.err" -- \
       "Run the gate again; if it fails again, the database's format has changed, and this check needs to follow."
@@ -225,16 +351,18 @@ cmd_hard() {
       absent) pass "CRAN deadline" "$pkg is not on CRAN, so CRAN set no deadline." ;;
       none) pass "CRAN deadline" "CRAN set no deadline for $pkg." ;;
       *)
+        local why="CRAN asked for a fix of problems it found, and archives the package unless they are fixed by then."
+        local checks_url="https://cran.r-project.org/web/checks/check_results_$pkg.html"
         flunk "CRAN deadline" "CRAN set a deadline" \
-          "CRAN's package database gives $pkg the deadline \`$deadline\`: CRAN asked for a fix of problems it found, and archives the package unless they are fixed by then." -- \
-          "Read the problems on https://cran.r-project.org/web/checks/check_results_$pkg.html and in CRAN's email to the maintainer, and fix them in this release." \
+          "CRAN's package database gives $pkg the deadline \`$deadline\`: $why" -- \
+          "Read the problems on $checks_url and in CRAN's email to the maintainer, and fix them in this release." \
           "The deadline stays in the database until CRAN accepts a fixed version."
         ;;
     esac
   fi
   endgroup
 
-  output_file report "$report"
+  output_file report "$report" 30000
   if [ ${#failed[@]} -gt 0 ]; then
     output passed false
     summary "**Not ready:** $(printf '%s, ' "${failed[@]}" | sed 's/, $//') failed." ""
@@ -275,6 +403,16 @@ cmd_report() {
   }
 
   summary "## Release gate: reported, not enforced" ""
+  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-0}"
+
+  # A setup step that failed: the checks that need what it installs report themselves as not run.
+  local step outcome
+  while IFS='=' read -r step outcome; do
+    [ -n "$step" ] || continue
+    [ "$outcome" != success ] || continue
+    unrun "Setup: $step" "the job's step that sets up \`$step\` ended with \`$outcome\`; its error in $run_url names the cause, \
+and the checks below that need it cannot run."
+  done <<<"${SETUP:-}"
 
   group "Help pages: \\value"
   local rd missing=()
@@ -349,7 +487,17 @@ cmd_report() {
 
   group "R CMD check --as-cran"
   local name status
-  if [ -z "$tarball" ]; then
+  case "${TARBALL_OUTCOME:-success}" in
+    success) ;;
+    failure)
+      unrun "R CMD check" "taking the checked tarball failed. The step's error in $run_url names the cause: \
+no green push or dispatch run of the check workflow on this commit holds the tarball, the commit is not the branch's head, \
+the token cannot read the runs, or the tarball's digest or contents do not match." ;;
+    *) unrun "R CMD check" "the step that takes the checked tarball ended with \`$TARBALL_OUTCOME\`." ;;
+  esac
+  if [ "${TARBALL_OUTCOME:-success}" != success ]; then
+    :
+  elif [ -z "$tarball" ]; then
     unrun "R CMD check" "no checked tarball of this commit, from a green run of the check workflow."
   elif [ ! -f "$tarball" ]; then
     unrun "R CMD check" "the tarball \`$tarball\` does not exist."
@@ -381,7 +529,7 @@ cmd_report() {
 
   cat "$items" "$more" >"$out/report.md"
   summary "$(cat "$out/report.md")" ""
-  output_file report "$out/report.md"
+  output_file report "$out/report.md" 60000
 }
 
 case "${1:-}" in

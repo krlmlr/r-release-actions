@@ -18,6 +18,12 @@ inputs:
   tarball:
     description: "`report`: the checked tarball to run `R CMD check --as-cran` on; empty skips that check"
     default: ""
+  tarball-outcome:
+    description: "`report`: the outcome of the step that took the checked tarball, reported unless `success`; empty when there was none"
+    default: ""
+  setup:
+    description: "`report`: one `<setup step>=<outcome>` per line; each that is not `success` is reported with the checks"
+    default: ""
 
 outputs:
   package:
@@ -42,6 +48,8 @@ runs:
         MODE: ${{ inputs.mode }}
         PKG_PATH: ${{ inputs.path }}
         TARBALL: ${{ inputs.tarball }}
+        TARBALL_OUTCOME: ${{ inputs.tarball-outcome }}
+        SETUP: ${{ inputs.setup }}
       run: |
         script="$GITHUB_ACTION_PATH/release-gate.sh"
         status=0

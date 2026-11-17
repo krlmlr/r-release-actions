@@ -4,12 +4,15 @@
 # and stubs of urlchecker, spelling, the README's knit and `R CMD check`: nothing reaches CRAN.
 #
 #   1. `hard` passes a release that meets every requirement, and reports each check.
-#   2. `hard` fails, each with its own error, on a development version, `Remotes`, a dependency on a development version
-#      or on a source outside CRAN, a missing, doubled, undated, mismatched, stale or future NEWS.md section,
-#      a deadline in CRAN's package database, and a database that cannot be read; one failure does not hide another.
-#   3. `report` never fails, and reports help pages without `\value`, a stale or differently knitted README,
-#      URLs, spelling, and the problems of `R CMD check`, run with CRAN's incoming checks on the tarball;
-#      a check that cannot run is reported as not run.
+#   2. `hard` fails, each with its own error, on a development version, `Remotes`, a dependency on a source outside CRAN
+#      or on a version CRAN does not have (four components CRAN has pass; base packages pass; Bioconductor and
+#      Additional_repositories are reported), a missing, doubled, undated, mismatched, stale or future NEWS.md section,
+#      naming near-miss headings and ignoring code fences, a deadline in CRAN's package database,
+#      and a database that cannot be read; one failure does not hide another.
+#   3. `report` never fails, and reports a failed setup step, a checked tarball that could not be taken,
+#      help pages without `\value`, a stale or differently knitted README, URLs, spelling, and the problems of
+#      `R CMD check`, run with CRAN's incoming checks on the tarball; a check that cannot run is reported as not run,
+#      and a long report is cut to fit an environment variable.
 #
 # Usage:
 #   actions/release-gate/release-gate-test.sh
@@ -26,13 +29,18 @@ PKG=$SCRATCH/pkg
 STUB=$SCRATCH/stub
 mkdir -p "$STUB" "$SCRATCH/bin"
 
-# CRAN's package database: fakepkg without a deadline, and another package with one.
+# CRAN's package database: fakepkg without a deadline, and the packages the fixtures depend on, one of them with a deadline.
 DB=$SCRATCH/packages.rds
 db() { # <fakepkg's deadline, or empty, or `absent`>
   Rscript --vanilla -e '
     a <- commandArgs(TRUE)
-    db <- if (a[[2]] == "absent") data.frame(Package = "other", Deadline = "2026-12-01") else
-      data.frame(Package = c("other", "fakepkg"), Deadline = c("2026-12-01", if (nzchar(a[[2]])) a[[2]] else NA))
+    db <- data.frame(
+      Package = c("other", "cli", "rlang", "Matrix", "RcppArmadillo", "cpp11", "BH", "testthat"),
+      Version = c("1.0.0", "3.6.5", "1.1.6", "1.7-4", "15.0.2-2", "0.5.2", "1.87.0-1", "3.3.0"),
+      Deadline = c("2026-12-01", rep(NA, 7))
+    )
+    if (a[[2]] != "absent") db <- rbind(db, data.frame(Package = "fakepkg", Version = "1.0.0",
+      Deadline = if (nzchar(a[[2]])) a[[2]] else NA))
     saveRDS(as.matrix(db), a[[1]])
   ' "$DB" "${1:-}"
 }
@@ -112,7 +120,8 @@ has "and the verdict" "$o" "passed=true"
 has "the report says the version passed" "$o" "- ✅ **Version:** \`1.0.1\` has three components."
 has "and Remotes" "$o" "- ✅ **Remotes:**"
 has "and the dependencies" "$o" "- ✅ **Dependencies:**"
-has "and NEWS.md, found with its date" "$o" "- ✅ **NEWS.md:** one section \`# fakepkg 1.0.1 (2026-11-10)\`, dated as \`DESCRIPTION\`, 5 days ago."
+has "and NEWS.md, found with its date" "$o" \
+  "- ✅ **NEWS.md:** one section \`# fakepkg 1.0.1 (2026-11-10)\`, dated as \`DESCRIPTION\`, 5 days ago."
 has "and the deadline" "$o" "- ✅ **CRAN deadline:** CRAN set no deadline for fakepkg."
 has "the report is a multi-line output" "$o" "report<<EOF_"
 has "a notice says so" "$out" "::notice title=Release gate::fakepkg 1.0.1 passes every hard check."
@@ -144,18 +153,69 @@ out=$(hard)
 has "a Remotes field fails" "$out" "::error title=DESCRIPTION has a Remotes field::\`Remotes: r-lib/rlang\`"
 EXTRA='Remotes:' checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
 has "an empty one too" "$(hard)" "::error title=DESCRIPTION has a Remotes field::"
-EXTRA=$'LinkingTo: cpp11 (>= 0.4.7.9000), BH' checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
+deps() { # <Imports line>, then more DESCRIPTION lines
+  local imports=$1
+  shift
+  EXTRA=$(printf '%s\n' "$@") checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
+  sed -i "s|^    rlang\$|    rlang, $imports|" "$PKG/DESCRIPTION"
+}
+deps 'Matrix (>= 1.6-1.1), RcppArmadillo (>= 0.12.6.6.0), cli (== 3.6.5), stats, tools (>= 99.0.0)'
 out=$(hard)
-has "a development version of a dependency fails" "$out" "::error title=A dependency is not on CRAN::LinkingTo: \`cpp11 (>= 0.4.7.9000)\`, a development version"
-hasnt "and names only that one" "$out" "BH"
-EXTRA=$'Suggests: testthat (>= 3.2.1.9000)' checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
-has "Suggests is not checked" "$(hard)" "exit 0"
-EXTRA='' checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
-sed -i 's/^    rlang$/    github::r-lib\/rlang, owner\/pkg@v1/' "$PKG/DESCRIPTION"
+has "four components that CRAN has pass, as do an exact version and base packages" "$out" "exit 0"
+has "and the report says what they are checked against" "$(cat "$SCRATCH/output")" \
+  "- ✅ **Dependencies:** Depends, Imports, LinkingTo and Suggests need nothing outside CRAN, checked against CRAN's package database."
+deps 'BH' 'LinkingTo: cpp11 (>= 0.5.2.9000), BH (>= 1.87.0-1)'
 out=$(hard)
-has "a source outside CRAN fails" "$out" "Imports: \`github::r-lib/rlang\`, a source outside CRAN; Imports: \`owner/pkg@v1\`, a source outside CRAN"
+has "a version CRAN does not have yet fails" "$out" \
+  "::error title=A dependency is not on CRAN::LinkingTo: \`cpp11 (>= 0.5.2.9000)\`, CRAN has 0.5.2."
+hasnt "and names only that one" "$out" "BH (>="
+deps 'cli (> 3.6.5), rlang (== 1.1.5), Matrix (< 99.0)'
+out=$(hard)
+has "> needs a higher version than CRAN's" "$out" "Imports: \`cli (> 3.6.5)\`, CRAN has 3.6.5"
+has "== needs CRAN's" "$out" "Imports: \`rlang (== 1.1.5)\`, CRAN has 1.1.6"
+hasnt "< is not checked" "$out" "Matrix"
+deps 'cli (>= x.y)'
+has "a version that is no version fails" "$(hard)" "Imports: \`cli (>= x.y)\`, no valid version"
+deps 'notoncran'
+has "a package not on CRAN fails" "$(hard)" "::error title=A dependency is not on CRAN::Imports: \`notoncran\`, not on CRAN."
+deps 'notoncran' 'biocViews: Software'
+out=$(hard)
+has "unless biocViews makes it a Bioconductor package" "$out" "exit 0"
+has "which is reported" "$(cat "$SCRATCH/output")" \
+  "- ⚠️ **Dependencies:** Imports: \`notoncran\`, not on CRAN, taken to be on Bioconductor as \`biocViews\` says."
+deps 'cli' 'Suggests: testthat (>= 3.3.0.9000), elsewhere'
+out=$(hard)
+has "Suggests is checked as well" "$out" "Suggests: \`testthat (>= 3.3.0.9000)\`, CRAN has 3.3.0; Suggests: \`elsewhere\`, not on CRAN."
+deps 'cli' 'Suggests: elsewhere' 'Additional_repositories: https://example.org/repo'
+out=$(hard)
+has "a suggested package from Additional_repositories passes" "$out" "exit 0"
+o=$(cat "$SCRATCH/output")
+has "and is reported" "$o" "- ⚠️ **Dependencies:** Suggests: \`elsewhere\`, not on CRAN, to come from \`Additional_repositories\`."
+has "as is the field itself" "$o" \
+  "- ⚠️ **Additional repositories:** \`Additional_repositories: https://example.org/repo\`: CRAN accepts it"
+has "with a warning in the run" "$out" "::warning title=Additional repositories::"
+deps 'elsewhere' 'Additional_repositories: https://example.org/repo'
+has "an import from Additional_repositories still fails" "$(hard)" "Imports: \`elsewhere\`, not on CRAN."
+deps 'github::r-lib/rlang, owner/pkg@v1'
+out=$(hard)
+has "a source outside CRAN fails" "$out" \
+  "Imports: \`github::r-lib/rlang\`, a source outside CRAN; Imports: \`owner/pkg@v1\`, a source outside CRAN"
+EXTRA='Suggests: r-lib/testthat' checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
+has "in Suggests too" "$(hard)" "Suggests: \`r-lib/testthat\`, a source outside CRAN"
 
 section "hard: NEWS.md"
+checkout 1.0.1 2026-11-15 "## fakepkg 1.0.1 (2026-11-15)" "# fakepkg v1.0.1" "# fakepkg  1.0.1" \
+  "# fakepkg 1.0.1 (2026-11-15) beta" "# fakepkg 1.0.10"
+out=$(hard)
+has "without a section, the headings that mention the version are named" "$out" \
+  "::error title=No NEWS.md section for fakepkg 1.0.1::\`NEWS.md\` has no section headed \`# fakepkg 1.0.1\`, \
+only headings that mention the version: \
+\`## fakepkg 1.0.1 (2026-11-15)\`; \`# fakepkg v1.0.1\`; \`# fakepkg  1.0.1\`; \`# fakepkg 1.0.1 (2026-11-15) beta\`."
+hasnt "but not another version" "$out" "1.0.10\`"
+checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
+# shellcheck disable=SC2016  # a Markdown code fence
+printf '```\n# fakepkg 1.0.1 (2026-11-15)\n```\n' >>"$PKG/NEWS.md"
+has "a heading inside a code fence is not one" "$(hard)" "exit 0"
 checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1"
 has "a heading without a date fails" "$(hard)" "::error title=The NEWS.md heading has no date::"
 checkout 1.0.1 2026-11-14 "# fakepkg 1.0.1 (2026-11-15)"
@@ -187,9 +247,15 @@ has "pointing at the check results" "$out" "check_results_fakepkg.html"
 db ""
 out=$(CRAN_DB_URL=file://$SCRATCH/missing.rds hard)
 has "a database that cannot be downloaded fails" "$out" "::error title=CRAN's package database cannot be read::Reading file://"
+is "once, and nothing else fails" "$(grep -c '^::error' <<<"$out")" 1
+has "the dependencies are checked for sources outside CRAN only" "$(cat "$SCRATCH/output")" \
+  "checked for sources outside CRAN only, as CRAN's package database cannot be read."
 echo "not an rds" >"$SCRATCH/bad.rds"
 out=$(CRAN_DB_URL=file://$SCRATCH/bad.rds hard)
-has "and one that R cannot read" "$out" "::error title=CRAN's package database cannot be read::Reading the downloaded database with R failed"
+has "and one that R cannot read" "$out" \
+  "::error title=CRAN's package database cannot be read::Reading the downloaded database with R failed"
+has "which the dependencies report too" "$out" \
+  "::error title=The dependencies cannot be checked against CRAN::Reading CRAN's package database with R failed"
 
 section "hard: one failure does not hide another"
 db 2026-12-01
@@ -233,7 +299,8 @@ touch "$SCRATCH/fakepkg_1.0.1.tar.gz"
 out=$(run report "$PKG" "$SCRATCH/out" "$SCRATCH/fakepkg_1.0.1.tar.gz")
 has "it succeeds" "$out" "exit 0"
 o=$(cat "$SCRATCH/output")
-has "help pages, without data and the package's page" "$o" "- ✅ **Help pages:** every page with a \`\\usage\` section has a \`\\value\` section."
+has "help pages, without data and the package's page" "$o" \
+  "- ✅ **Help pages:** every page with a \`\\usage\` section has a \`\\value\` section."
 has "the README" "$o" "- ✅ **README:** \`README.md\` is what \`README.Rmd\` knits to."
 has "knitted in a copy" "$(cat "$STUB/knit.log")" "knit in $SCRATCH/out/knit"
 has "URLs" "$o" "- ✅ **URLs:** urlchecker flags none."
@@ -292,6 +359,18 @@ o=$(cat "$SCRATCH/output")
 has "a long line is cut" "$o" "$(printf 'https://example.org/%0280d [...]' 0)"
 has "and a long text after 60 lines" "$o" "[11 more lines]"
 hasnt "the rest is gone" "$o" $'\n60\n'
+# Four long reports of 60 lines of 300 characters each are more than the 60000 bytes the report may take.
+long() { for i in $(seq 70); do printf "%s %0300d\n" "$1" "$i"; done; }
+long url >"$STUB/urls.out"
+long word >"$STUB/spelling.out"
+{ long knit; } >"$STUB/README.knit"
+{ echo "* checking examples ... ERROR"; long check; echo "Status: 1 ERROR"; } >"$STUB/00check.log"
+for f in urls spelling; do echo 3 >"$STUB/$f.rc"; done
+out=$(run report "$PKG" "$SCRATCH/out" "$SCRATCH/fakepkg_1.0.1.tar.gz")
+o=$(cat "$SCRATCH/output")
+has "a long report is cut" "$o" "[Cut to fit: the run's summary page has the rest.]"
+has "closing its blocks" "$o" "$(printf '[Cut to fit: the run'"'"'s summary page has the rest.]\n\n</details>')"
+is "and stays far below the 128 KiB of an environment variable" "$(($(wc -c <"$SCRATCH/output") < 61000))" 1
 
 section "report: a README.Rmd committed after README.md"
 printf -- '---\noutput: github_document\n---\n\nThe new README.\n' >"$PKG/README.Rmd"
@@ -319,6 +398,19 @@ has "no tarball skips R CMD check" "$o" "- ⏭️ **R CMD check:** not run: no c
 has "with a warning in the run" "$out" "::warning title=R CMD check not run::"
 out=$(run report "$PKG" "$SCRATCH/out" "$SCRATCH/none_1.0.1.tar.gz")
 has "a missing tarball is not run" "$(cat "$SCRATCH/output")" "not run: the tarball"
+out=$(SETUP=$'pandoc=success\ndependencies=failure' TARBALL_OUTCOME=failure GITHUB_SERVER_URL=https://github.example \
+  GITHUB_REPOSITORY=owner/fakepkg GITHUB_RUN_ID=99 run report "$PKG" "$SCRATCH/out")
+o=$(cat "$SCRATCH/output")
+has "naming the step and pointing at its error" "$o" \
+  "- ⏭️ **Setup: dependencies:** not run: the job's step that sets up \`dependencies\` ended with \`failure\`; \
+its error in https://github.example/owner/fakepkg/actions/runs/99 names the cause"
+hasnt "a successful one is not" "$o" "Setup: pandoc"
+has "a failed tarball step is not reported as a missing tarball" "$o" \
+  "- ⏭️ **R CMD check:** not run: taking the checked tarball failed. \
+The step's error in https://github.example/owner/fakepkg/actions/runs/99 names the cause"
+hasnt "which it is not" "$o" "no checked tarball of this commit"
+out=$(TARBALL_OUTCOME=skipped run report "$PKG" "$SCRATCH/out")
+has "nor a skipped one" "$(cat "$SCRATCH/output")" "the step that takes the checked tarball ended with \`skipped\`."
 rm "$STUB/00check.log"
 out=$(run report "$PKG" "$SCRATCH/out" "$SCRATCH/fakepkg_1.0.1.tar.gz")
 has "a check that writes no log is not run" "$(cat "$SCRATCH/output")" \
