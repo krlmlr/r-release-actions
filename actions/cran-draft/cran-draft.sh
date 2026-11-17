@@ -75,7 +75,7 @@ select_releases=".[] | select(.tag_name == \"$tag\" or ((.body // \"\") | contai
     "Check that the calling job grants \`contents: read\` or \`write\`, then dispatch the submission again."
 published=$(awk -F '\t' '$2 == "published" { print $3 }' "$work/releases")
 drafts=$(awk -F '\t' '$2 == "draft"' "$work/releases")
-ndrafts=$(printf '%s' "$drafts" | grep -c . || true)
+ndrafts=$(count_lines "$drafts")
 if [ -n "$published" ]; then
   fail "Release" "$title is published" \
     "The release of $title is published at $published, and a published release is never changed. Nothing was drafted or uploaded." -- \

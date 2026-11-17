@@ -7,7 +7,8 @@
 #      ignores one by anyone else with a warning, and fails without exactly one when required.
 #   2. `status` posts the workflow's comment, then updates it; a comment with the marker by someone else is left alone;
 #      the overall result is failure when any job failed.
-#   3. `attempt` posts a new comment numbered after the earlier attempts of the version, and edits none.
+#   3. `attempt` posts a new comment numbered after the earlier attempts of the version, and edits none;
+#      unreadable comments fail with GitHub's error.
 #
 # Usage:
 #   actions/release-report/release-report-test.sh
@@ -102,6 +103,10 @@ out=$(RESULTS='version=success' run status 7 cran-submission "CRAN submission")
 w=$(cat "$SCRATCH/writes")
 has "a later run updates the bot's comment" "$w" "PATCH repos/owner/fakepkg/issues/comments/51"
 has "as a success" "$w" "### ✅ CRAN submission: success"
+out=$(RESULTS='version=success' run status 8 cran-submission "CRAN submission")
+has "comments that cannot be read fail, with GitHub's error" "$out" \
+  "::error title=The checklist pull request's comments cannot be read::Reading the comments of #8 failed: gh: Not Found (HTTP 404)."
+is "and post nothing" "$(cat "$SCRATCH/writes")" ""
 
 section "attempt"
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
@@ -121,6 +126,15 @@ has "a comment that cannot be posted fails, saying what to post by hand" "$out" 
 has "with the commit and the SHA-256" "$(cat "$SUMMARY")" "commit \`$SHA\`, tarball SHA-256 \`$TSHA\`"
 out=$(run attempt 8 fakepkg 1.0.1 "$SHA" "$TSHA" fakepkg_1.0.1.tar.gz)
 has "earlier attempts that cannot be read fail" "$out" "::error title=The earlier attempts cannot be read::"
+has "with GitHub's error" "$out" "Reading the comments of #8 failed: gh: Not Found (HTTP 404)."
+is "and post nothing" "$(cat "$SCRATCH/writes")" ""
+answer "repos/owner/fakepkg/issues/9/comments?per_page=100" "[]"
+out=$(run attempt 9 fakepkg 1.0.1 "$SHA" "$TSHA" fakepkg_1.0.1.tar.gz)
+has "no comments at all succeed" "$out" "exit 0"
+has "as attempt 1" "$(cat "$SCRATCH/writes")" "### CRAN submission: fakepkg 1.0.1, attempt 1"
+answer "repos/owner/fakepkg/issues/9/comments?per_page=100" "[$(comment 60 'github-actions[bot]' '<!-- release-report: cran-submission -->')]"
+out=$(run attempt 9 fakepkg 1.0.1 "$SHA" "$TSHA" fakepkg_1.0.1.tar.gz)
+has "nor do comments without an attempt" "$(cat "$SCRATCH/writes")" "### CRAN submission: fakepkg 1.0.1, attempt 1"
 out=$(run attempt 7 fakepkg 1.0.1 "${SHA:0:10}" "$TSHA" fakepkg_1.0.1.tar.gz)
 has "a short SHA is a usage error" "$out" "exit 2"
 

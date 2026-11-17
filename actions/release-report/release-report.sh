@@ -106,7 +106,7 @@ cmd_find() {
   trusted=${trusted%$'\n'}
   [ -z "$others" ] ||
     warn "Checklist pull request ignored" "Ignored ${others}: the checklist pull request must be opened by someone with write access."
-  n=$(printf '%s' "$trusted" | grep -c . || true)
+  n=$(count_lines "$trusted")
   if [ "$n" -eq 1 ]; then
     say "Checklist pull request: #$trusted"
     summary "- Checklist pull request: #$trusted" ""
@@ -203,7 +203,15 @@ cmd_status() {
     echo
     echo "The run's summary page has the details. Later runs of this workflow update this comment."
   } >"$body"
-  id=$(bot_comments "$pr" "$marker" | tail -n 1)
+  local errf
+  errf=$(mktemp)
+  # shellcheck disable=SC2064  # expand now
+  trap "rm -f '$body' '$errf'" EXIT
+  id=$(bot_comments "$pr" "$marker" 2>"$errf") ||
+    fail "Report" "The checklist pull request's comments cannot be read" \
+      "Reading the comments of #$pr failed: $(head -n 1 "$errf"). The run's summary page has the results." -- \
+      "Check that the calling job grants \`pull-requests: write\`; the run's results stand, and the next run updates the comment."
+  id=$(printf '%s\n' "$id" | tail -n 1)
   if [ -n "$id" ]; then
     "$gh" api -X PATCH "repos/$repo/issues/comments/$id" -F "body=@$body" --jq .html_url
     say "Updated the comment on #$pr."
@@ -218,16 +226,17 @@ cmd_attempt() {
   local pr=$1 pkg=$2 version=$3 sha=$4 sha256=$5 name=$6
   { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version" && valid_sha "$sha" &&
     [[ $sha256 =~ ^[0-9a-f]{64}$ ]]; } || usage
-  local marker="<!-- cran-submission-attempt: $pkg $version -->" n body
-  n=$(bot_comments "$pr" "$marker") ||
-    fail "Attempt" "The earlier attempts cannot be read" \
-      "Reading the comments of #$pr failed, so the attempt cannot be numbered; the upload went through." -- \
-      "Post the attempt's comment by hand from this run's summary: commit \`$sha\`, tarball SHA-256 \`$sha256\`, run $(run_url)."
-  n=$(grep -c . <<<"$n" || true)
-  n=$((n + 1))
+  local marker="<!-- cran-submission-attempt: $pkg $version -->" earlier n body errf
   body=$(mktemp)
+  errf=$(mktemp)
   # shellcheck disable=SC2064  # expand now
-  trap "rm -f '$body'" EXIT
+  trap "rm -f '$body' '$errf'" EXIT
+  # A failed read fails here with GitHub's error; no earlier attempt is an empty answer, and makes this attempt 1.
+  earlier=$(bot_comments "$pr" "$marker" 2>"$errf") ||
+    fail "Attempt" "The earlier attempts cannot be read" \
+      "Reading the comments of #$pr failed: $(head -n 1 "$errf"). The attempt cannot be numbered; the upload went through." -- \
+      "Post the attempt's comment by hand from this run's summary: commit \`$sha\`, tarball SHA-256 \`$sha256\`, run $(run_url)."
+  n=$(($(count_lines "$earlier") + 1))
   {
     echo "$marker"
     echo "### CRAN submission: $pkg $version, attempt $n"

@@ -10,7 +10,8 @@ SCRATCH=$(mktemp -d)
 CLEANUP=()
 cleanup() {
   local c
-  for c in "${CLEANUP[@]}"; do eval "$c" || true; done
+  # Every cleanup runs even when an earlier one fails, and a failing one is named.
+  for c in "${CLEANUP[@]}"; do eval "$c" || echo "cleanup failed: $c" >&2; done
   [ -n "${KEEP:-}" ] || rm -rf "$SCRATCH"
 }
 trap cleanup EXIT

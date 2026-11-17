@@ -35,8 +35,21 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # The relative links of a listing: subfolders end in `/`; sort links, parents and absolute links are dropped.
+# A listing without such links yields none and succeeds; only a file that cannot be read fails.
 links() { # <html file>
-  grep -o 'href="[^"]*"' "$1" | sed 's/^href="//; s/"$//' | grep -v -e '^[/?#]' -e '^\.\.' -e '://' || true
+  awk '{
+    while (match($0, /href="[^"]*"/)) {
+      l = substr($0, RSTART + 6, RLENGTH - 7)
+      $0 = substr($0, RSTART + RLENGTH)
+      if (l !~ /^[\/?#]/ && l !~ /^\.\./ && l !~ /:\/\//) print l
+    }
+  }' "$1"
+}
+# The links of a downloaded listing into <html file>.links, or a failure that names the listing.
+listing_links() { # <url> <html file>
+  links "$2" >"$2.links" 2>"$work/err" ||
+    fail "Incoming" "CRAN's incoming queue cannot be parsed" "Reading the links of $1 failed: $(head -n 1 "$work/err")" "$work/err" -- \
+      "Dispatch the submission again; nothing was drafted or uploaded."
 }
 listing() { # <url> <file>
   curl --silent --show-error --fail --location --connect-timeout 30 --max-time 120 --output "$2" "$1" 2>"$work/err" ||
@@ -53,19 +66,21 @@ scan() { # <url> <depth>
   local url=$1 depth=$2 file l
   file=$work/$(printf '%s' "$url" | md5sum | cut -c1-12).html
   listing "$url" "$file"
+  listing_links "$url" "$file"
   while IFS= read -r l; do
     case "$l" in
       archive/) ;;
       */) [ "$depth" -ge 2 ] || scan "$url$l" $((depth + 1)) ;;
       "${pkg}"_*.tar.gz) found+=("${url#"$base"}$l") ;;
     esac
-  done < <(links "$file")
+  done <"$file.links"
 }
 scan "$base" 0
 n=0
+listing_links "$base" "$work/top.html"
 while IFS= read -r l; do
   case "$l" in */) [ "$l" = archive/ ] || n=$((n + 1)) ;; esac
-done < <(links "$work/top.html")
+done <"$work/top.html.links"
 val "folders" "$n"
 endgroup
 

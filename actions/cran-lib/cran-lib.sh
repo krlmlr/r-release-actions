@@ -130,6 +130,11 @@ dcf_field() { # <field> <file>
     END { if (found) print v }' "$2"
 }
 
+# The number of non-empty lines of a string; zero lines is an answer, not a failure, unlike `grep -c`'s exit status.
+count_lines() { # <string>
+  printf '%s' "$1" | awk 'NF { n++ } END { print n + 0 }'
+}
+
 sha256_of() {
   if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
