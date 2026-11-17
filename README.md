@@ -214,7 +214,8 @@ What a run does, job by job:
   It finds the checklist pull request, and runs on without one.
 - **tarball** finds the check run and its tarball artifact, and verifies the file, as the submission's job of that name does.
 - **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/<flavor>/`,
-  as `devtools::check_win_devel()` does, retrying a failed connection twice; a flavor given twice is uploaded once.
+  as `devtools::check_win_devel()` does, retrying a refused connection or an unresolved host twice;
+  a flavor given twice is uploaded once.
   Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
   A failed upload fails the job after the other flavors are tried.
   The job records each flavor's result as its upload ends, so that a timeout during a later upload still reports the earlier ones.

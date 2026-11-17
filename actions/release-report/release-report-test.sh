@@ -202,6 +202,11 @@ has "naming the job and the flavors it did not try" "$w" "- win-builder \`R-deve
 out=$(WINBUILDER_RESULTS='R-devel=failed R-release=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
   MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 hasnt "a job failed by a failed upload tried every flavor" "$(cat "$SCRATCH/writes")" "later flavors not tried"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "a job that failed without a failed upload may not have tried every flavor" "$w" "- win-builder: job \`failure\`, later flavors not tried"
+has "and is a failure" "$w" "### ❌ Builder checks"
 out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=success MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
   MACBUILDER_JOB=cancelled run builders 7 fakepkg 1.0.1)
 w=$(cat "$SCRATCH/writes")
