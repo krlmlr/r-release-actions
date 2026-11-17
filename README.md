@@ -143,8 +143,17 @@ Each step writes what it read, checked and did to the run's summary, with how to
   so on a release branch someone dispatches the check workflow on the branch before dispatching the submission.
 - **The checklist pull request.** One open pull request tracks the release:
   the release branch's pull request into `main`, or an empty pull request beside a fix made on `main`.
-  The first line of its body is exactly the marker `<!-- release-checklist: <package> X.Y.Z -->`;
-  a pull request that carries the marker further down, as one quoting other text might, is ignored with a warning.
+  The first line of its body is the marker `<!-- release-checklist: <package> X.Y.Z -->`, before any heading or preamble;
+  a byte order mark and whitespace around it do not matter.
+  Whoever creates checklist pull requests, a person, an App or an agent's session, starts the body like this:
+
+  ```markdown
+  <!-- release-checklist: <package> X.Y.Z -->
+  # Release <package> X.Y.Z
+  ```
+
+  A pull request that carries the marker further down, as one quoting other text might, is ignored
+  with the warning "Checklist pull request ignored", which names it as "#N by <login> (the marker is not the body's first line)".
   A GitHub App opens it, which is the normal case, or a person with write access to the repository.
   A bot account's pull request (`<app>[bot]`) counts when its head branch is in the repository itself.
   Opening one needs only `pull-requests: write` on the repository:

@@ -4,8 +4,8 @@
 # Report to the release's checklist pull request.
 #
 #   find <package> <version>
-#     The checklist pull request is the open pull request whose body's first line is exactly
-#     `<!-- release-checklist: <package> <version> -->` and whose author is either a bot account
+#     The checklist pull request is the open pull request whose body's first line, without a byte order mark
+#     and surrounding whitespace, is `<!-- release-checklist: <package> <version> -->` and whose author is either a bot account
 #     with the head branch in this repository, other than a dependency updater's, or a person with write access,
 #     or, where the token cannot read that, an owner, member or collaborator.
 #     One carrying the marker elsewhere in its body, by a dependency updater, by a bot from a fork,
@@ -49,6 +49,9 @@ set -euo pipefail
 # shellcheck source=../cran-lib/cran-lib.sh
 . "$(dirname "$0")/../cran-lib/cran-lib.sh"
 
+# The first line of a pull request's body, without a byte order mark and surrounding whitespace, as a jq filter.
+first_line_jq='(.body // "") | split("\n")[0] | sub("^[\\s\ufeff]+"; "") | sub("\\s+$"; "")'
+
 usage() {
   sed -n '3,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
@@ -72,10 +75,9 @@ cmd_find() {
   errf=$(mktemp)
   # shellcheck disable=SC2064  # expand now
   trap "rm -f '$errf'" EXIT
-  local first_line='(.body // "") | split("\n")[0] | rtrimstr("\r")'
   found=$("$gh" api --paginate "repos/$repo/pulls?state=open&per_page=100" \
     --jq ".[] | select((.body // \"\") | contains(\"$marker\"))
-      | [.number, .author_association, .user.login, .user.type, (.head.repo.full_name // \"-\"), (($first_line) == \"$marker\")]
+      | [.number, .author_association, .user.login, .user.type, (.head.repo.full_name // \"-\"), (($first_line_jq) == \"$marker\")]
       | @tsv" 2>"$errf") ||
     fail "Checklist" "The open pull requests cannot be read" "Listing the open pull requests of $repo failed: $(head -n 1 "$errf")." -- \
       "Check that the calling job grants \`pull-requests: read\`, then dispatch the submission again."
@@ -322,17 +324,19 @@ cmd_sync() {
   # The branch passed `git check-ref-format`, which still allows characters the shell interprets.
   qbranch=$(printf '%q' "$branch")
   # The parent's checklist pull request, chosen as `find` chooses one, except that a person's access is not read:
-  # whoever runs this can see the pull request it names.
+  # a bot's from a branch of the parent, or an owner's, member's or collaborator's.
   local select_pr
   select_pr=".[]
-  | select(((.body // \"\") | split(\"\\n\")[0] | rtrimstr(\"\\r\")) == \"$checklist\")
+  | select(($first_line_jq) == \"$checklist\")
   | select(.user.login != \"dependabot[bot]\" and .user.login != \"renovate[bot]\")
-  | select(.user.type != \"Bot\" or .head.repo.full_name == \"$parent\")
+  | select(if .user.type == \"Bot\" then .head.repo.full_name == \"$parent\"
+      else .author_association == \"OWNER\" or .author_association == \"MEMBER\" or .author_association == \"COLLABORATOR\" end)
   | .number"
   cat >"$block" <<EOF
 # $repo is a fork of $parent. Run $when, from a clone with push access to $parent,
 # with the remotes \`upstream\` ($parent) and \`origin\` ($repo).
-set -euo pipefail
+# The commands run in their own shell, which stops at the first failure and leaves the terminal open.
+bash -euo pipefail <<'SYNC'
 # The submitted commit, onto the same branch of the parent; the push fails rather than overwrite it.
 git fetch origin $sha
 git push upstream $sha:refs/heads/$qbranch
@@ -356,6 +360,7 @@ if [ "\$(printf '%s\\n' "\$prs" | awk 'NF { n++ } END { print n + 0 }')" -ne 1 ]
 fi
 gh pr comment "\$prs" --repo $parent \\
   --body 'CRAN submission of $pkg $version from $repo at $sha: $(run_url); attempts are recorded in $ref.'
+SYNC
 EOF
   group "Manual synchronization with $parent"
   cat "$block"

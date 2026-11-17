@@ -104,6 +104,12 @@ has "a marker later in the body does not count, even by someone with write acces
 has "a Dependabot pull request with the marker is ignored" "$out" "#14 by dependabot[bot] (a dependency update)"
 has "as is Renovate's" "$out" "#15 by renovate[bot] (a dependency update)"
 has "so none is the checklist pull request" "$out" "::error title=No single checklist pull request::There is no open pull request"
+answer "$PULLS" "[$(pull 7 NONE maint "\ufeff$MARK \r\nChecklist")]"
+out=$(REQUIRE=true run find fakepkg 1.0.1)
+is "a byte order mark before the marker and whitespace after it do not matter" "$(cat "$SCRATCH/output")" "pr=7"
+answer "$PULLS" "[$(pull 7 NONE maint "  $MARK\t\nChecklist")]"
+out=$(REQUIRE=true run find fakepkg 1.0.1)
+is "nor does leading whitespace" "$(cat "$SCRATCH/output")" "pr=7"
 section "find: more"
 answer "$PULLS" "[$(pull 4 MEMBER stranger "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
@@ -230,22 +236,34 @@ has "a branch name git refuses is a usage error" "$out" "exit 2"
 
 # The printed lookup of the parent's checklist pull request, run against the stub with the parent's pull requests.
 out=$(run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
+# shellcheck disable=SC2016  # sed addresses, not expansions
+sed -n '/^```sh$/,/^```$/p' "$SUMMARY" | sed '1d;$d' >"$SCRATCH/sync.sh"
+has "the commands run in their own shell, so a failure leaves the terminal open" "$(cat "$SCRATCH/sync.sh")" "bash -euo pipefail <<'SYNC'"
+is "which the block ends" "$(tail -n 1 "$SCRATCH/sync.sh")" "SYNC"
+mkdir -p "$SCRATCH/failgit"
+printf '#!/bin/sh\necho "git: refused" >&2\nexit 1\n' >"$SCRATCH/failgit/git"
+chmod +x "$SCRATCH/failgit/git"
+# shellcheck disable=SC2016  # expanded by the pasting shell
+out=$(PATH="$SCRATCH/failgit:$PATH" bash -c '. "$1"; echo "still open after $?"' _ "$SCRATCH/sync.sh" 2>&1)
+has "pasted into a shell, a failing command stops the commands" "$out" "git: refused"
+has "and leaves that shell running" "$out" "still open after 1"
+succeeds "the block is valid shell" bash -n "$SCRATCH/sync.sh"
 sed -n '/^prs=/,/^fi$/p' "$SUMMARY" >"$SCRATCH/lookup.sh"
 # shellcheck disable=SC2016  # expanded by the printed script
 echo 'echo "pr=$prs"' >>"$SCRATCH/lookup.sh"
 UPULLS="repos/upowner/fakepkg/pulls?state=open&per_page=100"
 lookup() { local rc=0; bash -euo pipefail "$SCRATCH/lookup.sh" 2>&1 || rc=$?; echo "exit $rc"; }
-answer "$UPULLS" "[$(pull 21 NONE upmaint "$MARK\nChecklist" User upowner/fakepkg),
+answer "$UPULLS" "[$(pull 21 MEMBER upmaint "$MARK\nChecklist" User upowner/fakepkg), $(pull 26 NONE outsider "$MARK" User other/fakepkg),
   $(pull 22 NONE upmaint "Notes\n$MARK" User upowner/fakepkg),
   $(pull 23 NONE 'dependabot[bot]' "$MARK" Bot upowner/fakepkg), $(pull 24 NONE 'some-app[bot]' "$MARK" Bot someone/fakepkg)]"
 out=$(lookup)
-is "the printed lookup takes the one checklist pull request of the parent, filtered as find filters" "$out" "pr=21
+is "the printed lookup takes the one checklist pull request of the parent, filtered as find filters, an outsider's left out" "$out" "pr=21
 exit 0"
 answer "$UPULLS" "[$(pull 22 NONE upmaint "Notes\n$MARK" User upowner/fakepkg)]"
 out=$(lookup)
 has "and fails without one" "$out" "Expected one checklist pull request in upowner/fakepkg, found: none"
 has "with an error" "$out" "exit 1"
-answer "$UPULLS" "[$(pull 21 NONE upmaint "$MARK" User upowner/fakepkg), $(pull 25 NONE 'release-app[bot]' "$MARK" Bot upowner/fakepkg)]"
+answer "$UPULLS" "[$(pull 21 OWNER upmaint "$MARK" User upowner/fakepkg), $(pull 25 NONE 'release-app[bot]' "$MARK" Bot upowner/fakepkg)]"
 out=$(lookup)
 has "or with two" "$out" "found: 21 25"
 
