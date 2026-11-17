@@ -214,15 +214,20 @@ What a run does, job by job:
   It finds the checklist pull request, and runs on without one.
 - **tarball** finds the check run and its tarball artifact, and verifies the file, as the submission's job of that name does.
 - **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/<flavor>/`,
-  as `devtools::check_win_devel()` does.
+  as `devtools::check_win_devel()` does, retrying a transient error twice; a flavor given twice is uploaded once.
   Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
   A failed upload fails the job after the other flavors are tried.
+  The job records each flavor's result as its upload ends, so that a timeout during a later upload still reports the earlier ones.
 - **macbuilder** posts the tarball to `https://mac.r-project.org/macbuilder/v1/submit`,
-  as `devtools::check_mac_release()` does, and polls the result page it answers with, once a minute,
-  until the page shows the check's `Status:` line or the wait ends.
-  A check that ends in a note, a warning or an error, and a wait that ends without a result, are reported with a warning,
+  as `devtools::check_mac_devel()` does for `r-devel` and `check_mac_release()` for `r-release`,
+  and polls the result page it answers with, once a minute, until the page shows a finished check log or the wait ends.
+  Macbuilder documents no states: a page counts as finished when its check log ends in the `Status:` line,
+  macbuilder's `* result classification:` line and the end of the log, as finished pages do,
+  so that a `Status:` line in a test's output does not end the wait.
+  A check that ends in a note, a warning or an error, a status that is none of `R CMD check`'s, reported as `unknown`
+  with the result page to read, and a wait that ends without a result are reported with a warning,
   and do not fail the job; a failed upload does.
-- **report**, on a real run with a checklist pull request, creates or updates the workflow's one comment there,
+- **report**, on a real run with a checklist pull request that nobody cancelled, creates or updates the workflow's one comment there,
   marked `<!-- release-builders: <package> X.Y.Z -->`: each win-builder upload, and macbuilder's status with a link to its result page.
 - **preview**, on a dry run, shows that comment in the run's summary, with no permission.
 

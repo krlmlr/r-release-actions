@@ -177,6 +177,16 @@ has "a later run updates the bot's comment of the version" "$w" "PATCH repos/own
 has "a NOTE asks for attention" "$w" "### ⚠️ Builder checks: fakepkg 1.0.1"
 out=$(WINBUILDER_RESULTS='R-devel=uploaded' MACBUILDER_OUTCOME=timeout MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 has "so does a timeout" "$(cat "$SCRATCH/writes")" "- macbuilder \`r-devel\`: no result yet when the run stopped waiting"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' MACBUILDER_OUTCOME=unknown MACBUILDER_STATUS=$'done `x`\a' \
+  MACBUILDER_URL=https://mac.example/macbuilder/results/1-a/ MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "an unknown outcome asks for attention" "$w" "### ⚠️ Builder checks"
+has "saying the page was not understood, with its link" "$w" \
+  "- macbuilder \`r-devel\`: result page not understood (\`Status: done x\`), read it, [result page](https://mac.example/macbuilder/results/1-a/)"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' MACBUILDER_OUTCOME=note MACBUILDER_STATUS="1 NOTE\`$(printf 'y%.0s' $(seq 300))" \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+has "the status loses its backticks and is cut to 200 characters" "$(cat "$SCRATCH/writes")" \
+  "\`Status: 1 NOTE$(printf 'y%.0s' $(seq 194))\`"
 out=$(WINBUILDER_RESULTS='R-devel=failed R-release=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=error \
   MACBUILDER_STATUS='1 ERROR' MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 w=$(cat "$SCRATCH/writes")

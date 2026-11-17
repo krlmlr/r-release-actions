@@ -43,7 +43,7 @@
 #   DETAILS              `status`: Markdown appended below the job results, may be empty
 #   WINBUILDER_RESULTS   `builders`: `<flavor>=<uploaded|failed|dry-run>`, separated by spaces; WINBUILDER_JOB its job's result
 #   MACBUILDER_FLAVOR, MACBUILDER_URL, MACBUILDER_OUTCOME, MACBUILDER_STATUS, MACBUILDER_JOB
-#                        `builders`: macbuilder's flavor, result page, outcome (`ok`, `note`, `warning`, `error`, `timeout`),
+#                        `builders`: macbuilder's flavor, result page, outcome (`ok`, `note`, `warning`, `error`, `unknown`, `timeout`),
 #                        `Status:` line, and its job's result
 #   SHA, SHA256          `builders`: the commit and the tarball's SHA-256, may be empty
 #   DRAFT_URL            `attempt`: the draft release
@@ -106,12 +106,15 @@ cmd_builders() {
     wlines="- win-builder: no upload, job \`${wjob:-not run}\`"$'\n'
     [ "$wjob" = skipped ] || overall=failure
   fi
-  local murl=${MACBUILDER_URL:-} mstatus=${MACBUILDER_STATUS:-}
+  local murl=${MACBUILDER_URL:-} mstatus
+  # The status comes from macbuilder's page: no backticks or control characters reach the comment, and at most 200 characters.
+  mstatus=$(printf '%s' "${MACBUILDER_STATUS:-}" | tr -d '\000-\037\177`' | cut -c 1-200)
   case "${MACBUILDER_OUTCOME:-}" in
     ok) mline="\`Status: $mstatus\`" ;;
     note | warning) mline="\`Status: $mstatus\`"; [ "$overall" = failure ] || overall=attention ;;
     error) mline="**\`Status: $mstatus\`**"; overall=failure ;;
     timeout) mline="no result yet when the run stopped waiting"; [ "$overall" = failure ] || overall=attention ;;
+    unknown) mline="result page not understood (\`Status: $mstatus\`), read it"; [ "$overall" = failure ] || overall=attention ;;
     *)
       if [ "${DRY_RUN:-false}" = true ] && [ "$mjob" = success ]; then
         mline="not uploaded on a dry run"

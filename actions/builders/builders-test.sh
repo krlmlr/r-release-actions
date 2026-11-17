@@ -6,8 +6,10 @@
 #   1. `winbuilder` uploads the tarball's own bytes by anonymous FTP to `<flavor>/<file name>` for each flavor,
 #      tries every flavor when one fails, fails loudly after them, and outputs each flavor's result.
 #   2. `macbuilder` posts `pkgfile` and `rflavor` with `Accept: application/json`, and outputs the result page's URL;
-#      a 502, an answer without a result URL, and a URL on another host fail.
-#   3. `macbuilder-poll` waits through 404s and a page without a status, and reports OK, a NOTE and an ERROR;
+#      a 502 or another refusal, an answer without a result URL or that is no JSON,
+#      and a URL on another host, with another scheme or with user info fail.
+#   3. `macbuilder-poll` waits through 404s, other HTTP errors, curl's failures and a page without a finished check log,
+#      including one whose log holds a stray `Status:` line, and reports OK, a NOTE, an ERROR and an unknown status;
 #      a page that never finishes ends in a timeout; neither an ERROR nor a timeout fails.
 #   4. A dry run sends nothing and reports what a real run would send; a misnamed tarball fails before sending.
 #
@@ -121,10 +123,13 @@ EOF
 #
 # POST /macbuilder/v1/submit records its fields and the Accept header, and answers by `mac-mode`:
 # `ok` with the JSON `{"url": ".../macbuilder/results/<mac-job>/"}`, `down` with nginx's 502,
-# `nourl` with JSON without a URL, `foreign` with a result URL on another host.
+# `nourl` with JSON without a URL, `foreign` with a result URL on another host,
+# `e403` with a 403, `html` with a 200 HTML page, `scheme` with an https result URL, `userinfo` with user info in its host.
 # GET /macbuilder/results/<job>/ answers by the job's name, counting the GETs of each:
 # `ok` 404 first, then a page without a status, then a finished page with `Status: OK`;
-# `note` and `error` a finished page at once; `never` 404 always.
+# `note` and `error` a finished page at once; `never` 404 always; `e500` 500 always;
+# `stray` first a running page whose build log holds a `Status:` line, then a finished page with that line too;
+# `crlf` a finished page with CRLF line ends; `odd` a finished page whose status is no status of R CMD check.
 # The finished pages copy the shape of real ones: the check log in a <pre>, ending in `Status:` and the classification.
 
 cat >"$SCRATCH/http.py" <<'EOF'
@@ -180,8 +185,19 @@ class Mac(http.server.BaseHTTPRequestHandler):
         n = gets[job]
         if job == "ok" and n == 1 or job == "never":
             return self.reply(404, "<html><body><h1>404 Not Found</h1></body></html>")
+        if job == "e500":
+            return self.reply(500, "<html><body><h1>500</h1></body></html>")
         if job == "ok" and n == 2:
             return self.reply(200, "<html><body><h3>macOS builder results</h3><pre>Resetting rust\n</pre></body></html>")
+        if job == "stray":
+            stray = "<pre>Resetting rust\n  Status: indented\nStatus: 1 ERROR\n* checking tests ...\n"
+            if n == 1:
+                return self.reply(200, "<html><body>%s</pre><pre>* checking examples ...\nStatus: 2 NOTEs\n" % stray)
+            return self.reply(200, (FINISHED % ("stray", "OK", "OK, errors:no")).replace("<pre>Resetting rust\n", stray, 1))
+        if job == "crlf":
+            return self.reply(200, (FINISHED % ("crlf", "OK", "OK, errors:no")).replace("\n", "\r\n"))
+        if job == "odd":
+            return self.reply(200, FINISHED % ("odd", "done `rm` \x07" + "x" * 300, "?"))
         status = {"ok": ("OK", "OK, errors:no, warnings:no, notes:no"),
                   "note": ("1 NOTE", "NOTE, errors:no, warnings:no, notes:yes"),
                   "error": ("1 ERROR, 1 WARNING", "ERROR, errors:yes, warnings:yes, notes:no")}[job]
@@ -206,8 +222,15 @@ class Mac(http.server.BaseHTTPRequestHandler):
             return self.reply(502, "<html><body><h1>An error occurred.</h1><p>Sorry, the page you are looking for is currently unavailable.</p></body></html>")
         if m == "nourl":
             return self.reply(200, json.dumps({"error": "no maintainer"}), "application/json")
+        if m == "e403":
+            return self.reply(403, "<html><body><h1>403 Forbidden</h1></body></html>")
+        if m == "html":
+            return self.reply(200, "<html><body><p>Thank you for your submission.</p></body></html>")
         host = "elsewhere.example" if m == "foreign" else "127.0.0.1:%d" % self.server.server_port
-        url = "http://%s/macbuilder/results/%s/" % (host, read("mac-job"))
+        if m == "userinfo":
+            host = "user@" + host
+        scheme = "https" if m == "scheme" else "http"
+        url = "%s://%s/macbuilder/results/%s/" % (scheme, host, read("mac-job"))
         self.reply(200, json.dumps({"url": url}), "application/json")
 
 
@@ -268,7 +291,8 @@ has "it succeeds" "$out" "exit 0"
 is "one STOR per flavor, into the flavor's directory, of the tarball's bytes" "$(cat "$SCRATCH/ftp-requests")" \
   "STOR /R-devel/fakepkg_1.0.1.tar.gz sha256=$SHA
 STOR /R-release/fakepkg_1.0.1.tar.gz sha256=$SHA"
-is "the results" "$(cat "$SCRATCH/output")" "results=R-devel=uploaded R-release=uploaded"
+is "the results, written after each flavor" "$(cat "$SCRATCH/output")" "results=R-devel=uploaded
+results=R-devel=uploaded R-release=uploaded"
 has "the summary names the URLs" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FTP/R-devel/fakepkg_1.0.1.tar.gz"
 has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results to Jane Doe <jane@example.org>"
 has "with a notice" "$out" "::notice title=Uploaded to win-builder::"
@@ -279,13 +303,19 @@ out=$(run winbuilder "$TARBALL" R-devel R-release)
 has "a refused upload fails" "$out" "exit 1"
 has "loudly, naming the URL" "$out" "::error title=The upload to win-builder failed::curl exited with status"
 has "for every flavor tried" "$(grep -c 'The upload to win-builder failed' <<<"$out")" 2
-is "and outputs the results" "$(cat "$SCRATCH/output")" "results=R-devel=failed R-release=failed"
+is "and outputs the results" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed R-release=failed"
 echo ok >"$SCRATCH/ftp-mode"
 out=$(run winbuilder "$TARBALL" R-patched)
 has "an unknown flavor fails" "$out" "::error title=No win-builder flavor::"
 is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(WINBUILDER_URL=ftp://127.0.0.1:1 run winbuilder "$TARBALL" R-devel)
 has "an unreachable server fails" "$out" "exit 1"
+has "after curl's retries" "$out" "curl exited with status 7"
+out=$(run winbuilder "$TARBALL")
+has "no flavor fails, saying so" "$out" "::error title=No win-builder flavor::No flavor was given"
+out=$(run winbuilder "$TARBALL" R-devel R-release R-devel)
+is "a flavor given twice is uploaded once" "$(grep -c STOR "$SCRATCH/ftp-requests")" 2
+is "and reported once" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=uploaded R-release=uploaded"
 cp "$TARBALL" "$SCRATCH/pkg/fakepkg.tar.gz"
 out=$(run winbuilder "$SCRATCH/pkg/fakepkg.tar.gz" R-devel)
 has "a misnamed tarball fails" "$out" "::error title=The tarball is misnamed::"
@@ -302,7 +332,7 @@ out=$(run winbuilder --dry-run "$TARBALL" R-devel R-release)
 has "it succeeds" "$out" "exit 0"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 has "it says what it would upload, and where" "$(cat "$SUMMARY")" "- R-release: would upload to $FTP/R-release/fakepkg_1.0.1.tar.gz"
-is "the results say so" "$(cat "$SCRATCH/output")" "results=R-devel=dry-run R-release=dry-run"
+is "the results say so" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=dry-run R-release=dry-run"
 has "with a notice" "$out" "::notice title=Dry run::Nothing was sent to win-builder."
 
 section "macbuilder posts as devtools' check_mac() does"
@@ -326,7 +356,22 @@ echo foreign >"$SCRATCH/mac-mode"
 out=$(run macbuilder "$TARBALL" r-devel)
 has "a result URL on another host fails" "$out" "::error title=No result URL from macbuilder::"
 is "and outputs nothing" "$(cat "$SCRATCH/output")" ""
+echo e403 >"$SCRATCH/mac-mode"
+out=$(run macbuilder "$TARBALL" r-devel)
+has "another refusal fails with its status" "$out" "::error title=Macbuilder refused the upload::The submission answered HTTP 403"
+echo html >"$SCRATCH/mac-mode"
+out=$(run macbuilder "$TARBALL" r-devel)
+has "a 2xx answer that is no JSON fails" "$out" "::error title=No result URL from macbuilder::The submission answered HTTP 200"
+echo scheme >"$SCRATCH/mac-mode"
+out=$(run macbuilder "$TARBALL" r-devel)
+has "a result URL with another scheme fails" "$out" "::error title=No result URL from macbuilder::"
+echo userinfo >"$SCRATCH/mac-mode"
+out=$(run macbuilder "$TARBALL" r-devel)
+has "a result URL with user info fails" "$out" "::error title=No result URL from macbuilder::"
+is "and outputs nothing" "$(cat "$SCRATCH/output")" ""
 echo ok >"$SCRATCH/mac-mode"
+out=$(run macbuilder "$TARBALL" '')
+has "no flavor fails, saying so" "$out" "::error title=No macbuilder flavor::No flavor was given."
 out=$(run macbuilder "$TARBALL" r-oldrel)
 has "an unknown flavor fails" "$out" "::error title=No macbuilder flavor::"
 is "before anything is sent" "$(cat "$SCRATCH/http-requests")" ""
@@ -344,7 +389,7 @@ has "with a notice" "$out" "::notice title=Dry run::Nothing was sent to macbuild
 section "macbuilder-poll"
 out=$(run macbuilder-poll "$MAC/macbuilder/results/ok/")
 has "it waits through a 404" "$out" "poll 1: no result page yet (HTTP 404)"
-has "and a page without a status" "$out" "poll 2: the page has no check status yet"
+has "and a page without a status" "$out" "poll 2: the page shows no finished check yet"
 has "and succeeds on the finished page" "$out" "exit 0"
 is "with its outcome and status" "$(cat "$SCRATCH/output")" "outcome=ok
 status=OK"
@@ -365,6 +410,26 @@ has "a page that never finishes times out without failing" "$out" "exit 0"
 is "as a timeout" "$(cat "$SCRATCH/output")" "outcome=timeout
 status="
 has "with a warning" "$out" "::warning title=Macbuilder result pending::No check result at $MAC/macbuilder/results/never/"
+out=$(run macbuilder-poll "$MAC/macbuilder/results/stray/")
+has "a Status: line in a running page's log does not end the wait" "$out" "poll 1: the page shows no finished check yet"
+is "the status is the one before the classification" "$(cat "$SCRATCH/output")" "outcome=ok
+status=OK"
+out=$(run macbuilder-poll "$MAC/macbuilder/results/crlf/")
+is "CRLF line ends are dropped" "$(cat "$SCRATCH/output")" "outcome=ok
+status=OK"
+out=$(run macbuilder-poll "$MAC/macbuilder/results/odd/")
+has "a status that is none of R CMD check's is unknown" "$(head -n 1 "$SCRATCH/output")" "outcome=unknown"
+is "without backticks or control characters, at most 200 characters" "$(sed -n 's/^status=//p' "$SCRATCH/output")" \
+  "done rm $(printf 'x%.0s' $(seq 192))"
+has "and warns" "$out" "::warning title=Macbuilder result not understood::"
+out=$(MACBUILDER_POLL_SECONDS=1 MACBUILDER_TIMEOUT_SECONDS=2 run macbuilder-poll "$MAC/macbuilder/results/e500/")
+has "another HTTP status keeps waiting" "$out" "poll 1: HTTP 500"
+has "until the timeout" "$(cat "$SCRATCH/output")" "outcome=timeout"
+out=$(MACBUILDER_POLL_SECONDS=1 MACBUILDER_TIMEOUT_SECONDS=2 run macbuilder-poll "http://127.0.0.1:1/macbuilder/results/x/")
+has "a failing curl keeps waiting" "$out" "poll 1: curl exited with status 7"
+has "until the timeout, without failing" "$out" "exit 0"
+out=$(run macbuilder-poll "http://user@127.0.0.1:1/macbuilder/results/x/")
+has "a URL with user info is a usage error" "$out" "exit 2"
 out=$(run macbuilder-poll "$MAC/elsewhere/")
 has "a URL that is no result page is a usage error" "$out" "exit 2"
 

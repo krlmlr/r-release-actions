@@ -32,7 +32,7 @@ inputs:
     description: "`builders`: macbuilder's result page"
     default: ""
   macbuilder-outcome:
-    description: "`builders`: macbuilder's outcome, `ok`, `note`, `warning`, `error` or `timeout`"
+    description: "`builders`: macbuilder's outcome, `ok`, `note`, `warning`, `error`, `unknown` (a page not understood) or `timeout`"
     default: ""
   macbuilder-status:
     description: "`builders`: the `Status:` line of macbuilder's check"

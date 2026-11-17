@@ -1,7 +1,8 @@
 name: "Builder uploads"
 description: >
   Uploads a source tarball to win-builder by anonymous FTP, as devtools::check_win_devel() does (`builder: winbuilder`),
-  or to macbuilder, as devtools::check_mac_release() does, and waits for its result (`builder: macbuilder`),
+  or to macbuilder, as devtools::check_mac_devel() does for `r-devel` and check_mac_release() for `r-release`,
+  and waits for its result (`builder: macbuilder`),
   or, on a dry run, reports what it would send,
   with builders.sh beside this file.
   A check result informs and never fails the step; a failed upload does.
@@ -27,13 +28,13 @@ inputs:
 
 outputs:
   results:
-    description: "`winbuilder`: `<flavor>=<uploaded|failed|dry-run>` for each flavor, separated by spaces"
+    description: "`winbuilder`: `<flavor>=<uploaded|failed|dry-run>` for each flavor tried, separated by spaces"
     value: ${{ steps.winbuilder.outputs.results }}
   url:
     description: "`macbuilder`: the result page"
     value: ${{ steps.macbuilder.outputs.url }}
   outcome:
-    description: "`macbuilder`: `ok`, `note`, `warning`, `error` or `timeout`; empty on a dry run"
+    description: "`macbuilder`: `ok`, `note`, `warning`, `error`, `unknown` (a result page not understood) or `timeout`; empty on a dry run"
     value: ${{ steps.poll.outputs.outcome }}
   status:
     description: "`macbuilder`: the check's `Status:` line, such as `1 NOTE`"

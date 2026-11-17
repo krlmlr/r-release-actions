@@ -7,22 +7,29 @@
 #     Upload the tarball by anonymous FTP to `<WINBUILDER_URL>/<flavor>/<file name>` for each flavor,
 #     `R-devel`, `R-release` or `R-oldrelease`, as `devtools:::submit_winbuilder_ftp()` and `upload_ftp()` do
 #     (devtools 2.5.2, R/check-win.R). Win-builder emails the results to the maintainer named in the tarball.
-#     Every flavor is tried; any failed upload fails the stage after the others.
-#     Writes `results`, `<flavor>=<uploaded|failed|dry-run>` separated by spaces, to GITHUB_OUTPUT.
+#     A flavor given twice is uploaded once. Every flavor is tried, each with two retries on a transient error;
+#     any failed upload fails the stage after the others.
+#     Writes `results`, `<flavor>=<uploaded|failed|dry-run>` separated by spaces, to GITHUB_OUTPUT after each flavor,
+#     so that a job cancelled during a later upload still reports the earlier ones.
 #   macbuilder [--dry-run] <tarball> <flavor>
-#     Post the tarball to MACBUILDER_URL as `devtools:::check_mac()` does (devtools 2.5.2, R/check-mac.R):
+#     Post the tarball to MACBUILDER_URL as `devtools:::check_mac()` does (devtools 2.5.2, R/check-mac.R),
+#     which `check_mac_devel()` calls for `r-devel` and `check_mac_release()` for `r-release`:
 #     multipart fields `pkgfile` (the file) and `rflavor` (`r-devel` or `r-release`), with `Accept: application/json`,
 #     and read the result page's URL from the answer's `url`.
-#     The URL must be `<the submission URL's origin>/macbuilder/results/<job>/`.
+#     The URL must be `<the submission URL's origin>/macbuilder/results/<job>/`: the same scheme, host and port, no user info.
 #     Writes `url` to GITHUB_OUTPUT.
 #   macbuilder-poll <url>
-#     Fetch the result page every MACBUILDER_POLL_SECONDS until it holds the check's `Status:` line,
-#     or until MACBUILDER_TIMEOUT_SECONDS have passed. A page that answers 404, another error, or no `Status:` line
-#     counts as running: macbuilder documents no states, and only finished pages were observed.
-#     A finished page shows `R CMD check`'s log, ending in `Status: OK` or a count such as `Status: 1 NOTE`,
-#     then `* result classification: ...`; the outcome is the worst of ERROR, WARNING and NOTE it names, or OK.
-#     Writes `outcome` (`ok`, `note`, `warning`, `error` or `timeout`) and `status` (the `Status:` line) to GITHUB_OUTPUT.
-#     A check that ends in an error, and a timeout, warn; neither fails the stage.
+#     Fetch the result page every MACBUILDER_POLL_SECONDS until it is finished,
+#     or until MACBUILDER_TIMEOUT_SECONDS have passed. Macbuilder documents no states, and only finished pages were observed:
+#     their check log, in a `<pre>` element, ends in `R CMD check`'s `Status: OK` or a count such as `Status: 1 NOTE`,
+#     followed by `* result classification: ...` and then the element's end, `</pre>`.
+#     A page is finished when it holds that sequence; the status is the last `Status:` line before the classification,
+#     so that a `Status:` line in a test's output or a partly written log does not end the wait.
+#     A page that answers 404, another error, or lacks the sequence counts as running. Carriage returns are dropped.
+#     The outcome is the worst of ERROR, WARNING and NOTE the status names, `ok` for `OK`, and `unknown` for anything else.
+#     Writes `outcome` (`ok`, `note`, `warning`, `error`, `unknown` or `timeout`) and `status`
+#     (the `Status:` line without control characters and backticks, at most 200 characters) to GITHUB_OUTPUT.
+#     A check that does not end in OK, and a timeout, warn; neither fails the stage.
 #
 # With --dry-run, nothing is sent: the stage checks the tarball as for a real run and reports what it would send.
 #
@@ -88,7 +95,17 @@ cmd_winbuilder() {
     esac
     shift
   done
-  { [ -n "$tarball" ] && [ ${#flavors[@]} -gt 0 ]; } || usage
+  [ -n "$tarball" ] || usage
+  [ ${#flavors[@]} -gt 0 ] ||
+    fail "Win-builder" "No win-builder flavor" "No flavor was given, so there is nothing to upload." -- \
+      "Pass at least one of \`R-devel\`, \`R-release\` and \`R-oldrelease\`, separated by spaces, in \`winbuilder-flavors\`."
+  local unique=() u seen
+  for f in "${flavors[@]}"; do
+    seen=''
+    for u in "${unique[@]+"${unique[@]}"}"; do [ "$u" != "$f" ] || seen=1; done
+    [ -n "$seen" ] || unique+=("$f")
+  done
+  flavors=("${unique[@]}")
   for f in "${flavors[@]}"; do
     case "$f" in
       R-devel | R-release | R-oldrelease) ;;
@@ -113,13 +130,16 @@ cmd_winbuilder() {
       say "Dry run: would upload $base to $url"
       summary "- $f: would upload to $url"
       results+="$f=dry-run "
+      output results "${results% }"
       continue
     fi
     group "Win-builder: upload to $f"
     val "url" "$url"
     rc=0
-    # Anonymous FTP upload, as devtools' upload_ftp() does with curl's `upload = TRUE`.
-    curl --silent --show-error --connect-timeout 30 --max-time 600 --upload-file "$tarball" "$url" \
+    # Anonymous FTP upload, as devtools' upload_ftp() does with curl's `upload = TRUE`;
+    # at most three attempts of five minutes each, which the workflow's job timeout covers for three flavors.
+    curl --silent --show-error --connect-timeout 30 --max-time 300 --retry 2 --retry-connrefused \
+      --upload-file "$tarball" "$url" \
       >"$work/ftp.out" 2>"$work/ftp.err" || rc=$?
     endgroup
     if [ "$rc" -eq 0 ]; then
@@ -134,9 +154,8 @@ cmd_winbuilder() {
       results+="$f=failed "
       failed=1
     fi
+    output results "${results% }"
   done
-  results=${results% }
-  output results "$results"
   if [ -n "$dry_run" ]; then
     summary "" "Nothing was sent. A real run uploads the file by anonymous FTP; win-builder emails the results to $maint." ""
     notice "Dry run" "Nothing was sent to win-builder. A real run uploads $base for ${flavors[*]}."
@@ -150,18 +169,21 @@ cmd_winbuilder() {
 # --- macbuilder -----------------------------------------------------------
 
 cmd_macbuilder() {
-  local dry_run='' tarball='' flavor=''
+  local dry_run='' tarball='' flavor='' given=''
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) dry_run=1 ;;
       -*) usage ;;
       *)
-        if [ -z "$tarball" ]; then tarball=$1; elif [ -z "$flavor" ]; then flavor=$1; else usage; fi
+        if [ -z "$tarball" ]; then tarball=$1; elif [ -z "$given" ]; then flavor=$1 given=1; else usage; fi
         ;;
     esac
     shift
   done
-  { [ -n "$tarball" ] && [ -n "$flavor" ]; } || usage
+  [ -n "$tarball" ] || usage
+  [ -n "$flavor" ] ||
+    fail "Macbuilder" "No macbuilder flavor" "No flavor was given." -- \
+      "Pass \`r-devel\` or \`r-release\` in \`macbuilder-flavor\`."
   case "$flavor" in
     r-devel | r-release) ;;
     *) fail "Macbuilder" "No macbuilder flavor" "\`$flavor\` is neither \`r-devel\` nor \`r-release\`." -- \
@@ -210,7 +232,7 @@ cmd_macbuilder() {
   local result origin
   result=$(jq -r '.url // empty' "$work/submit.json" 2>/dev/null) || result=''
   origin=$(sed -E 's#^([a-z]+://[^/]+)/.*$#\1#' <<<"$url")
-  if ! [[ $result =~ ^[a-z]+://[^/]+/macbuilder/results/[A-Za-z0-9_-]+/$ ]] || [ "${result#"$origin"/}" = "$result" ]; then
+  if ! [[ $result =~ ^[a-z]+://[^/@]+/macbuilder/results/[A-Za-z0-9_-]+/$ ]] || [ "${result#"$origin"/}" = "$result" ]; then
     head -c 2000 "$work/submit.json" >"$work/submit.msg"
     fail "Macbuilder" "No result URL from macbuilder" \
       "The submission answered HTTP $code, without a \`url\` of the form $origin/macbuilder/results/<job>/ in its JSON." "$work/submit.msg" -- \
@@ -223,12 +245,22 @@ cmd_macbuilder() {
   notice "Uploaded to macbuilder" "$base for $flavor: $result"
 }
 
+# A finished result page's status and classification, separated by a tab; nothing for a page still running.
+# The check log ends in `Status: ...`, `* result classification: ...` and `</pre>`, in that order.
+page_result() { # <page>
+  awk '
+    /^Status: / { st = substr($0, 9); seen = 1; cls = ""; next }
+    seen && /^\* result classification: / { cls = substr($0, 26); next }
+    /<\/pre>/ && cls != "" { print st "\t" cls; exit }
+    /<\/pre>/ { seen = 0 }' "$1"
+}
+
 cmd_macbuilder_poll() {
   [ $# -eq 1 ] || usage
   local url=$1 interval=${MACBUILDER_POLL_SECONDS:-60} timeout=${MACBUILDER_TIMEOUT_SECONDS:-3600}
-  [[ $url =~ ^[a-z]+://[^/]+/macbuilder/results/[A-Za-z0-9_-]+/$ ]] || usage
+  [[ $url =~ ^[a-z]+://[^/@]+/macbuilder/results/[A-Za-z0-9_-]+/$ ]] || usage
   { [[ $interval =~ ^[0-9]+$ ]] && [[ $timeout =~ ^[0-9]+$ ]]; } || usage
-  local start=$SECONDS polls=0 code rc status='' outcome classification
+  local start=$SECONDS polls=0 code rc status='' outcome classification='' finished
   group "Macbuilder: wait for $url"
   while :; do
     polls=$((polls + 1))
@@ -238,9 +270,14 @@ cmd_macbuilder_poll() {
     if [ "$rc" -ne 0 ]; then
       say "  poll $polls: curl exited with status $rc: $(head -n 1 "$work/poll.err")"
     elif [ "$code" = 200 ]; then
-      status=$(sed -n 's/^Status: //p' "$work/page.html" | tail -n 1)
-      [ -z "$status" ] || break
-      say "  poll $polls: the page has no check status yet"
+      tr -d '\r' <"$work/page.html" >"$work/page.txt"
+      finished=$(page_result "$work/page.txt")
+      if [ -n "$finished" ]; then
+        status=${finished%%$'\t'*}
+        classification=${finished#*$'\t'}
+        break
+      fi
+      say "  poll $polls: the page shows no finished check yet"
     elif [ "$code" = 404 ]; then
       say "  poll $polls: no result page yet (HTTP 404)"
     else
@@ -264,13 +301,15 @@ cmd_macbuilder_poll() {
     OK) outcome=ok ;;
     *) outcome=unknown ;;
   esac
-  classification=$(sed -n 's/^\* result classification: //p' "$work/page.html" | tail -n 1)
+  status=$(printf '%s' "$status" | tr -d '\000-\037\177`' | cut -c 1-200)
   val "status" "$status"
   [ -z "$classification" ] || val "classification" "$classification"
   summary "### Macbuilder result" "" "- Status: \`$status\` after $polls polls" "- Result page: $url" ""
   output outcome "$outcome" status "$status"
   case "$outcome" in
     ok) notice "Macbuilder status OK" "$url" ;;
+    unknown) warn "Macbuilder result not understood" \
+      "The check on macbuilder ended in \`$status\`, which is no status of \`R CMD check\`: read the check log at $url. This does not gate the release." ;;
     *) warn "Macbuilder status $status" "The check on macbuilder ended in \`$status\`: $url. This does not gate the release; read the check log there." ;;
   esac
 }

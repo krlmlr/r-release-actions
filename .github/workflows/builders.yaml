@@ -55,7 +55,8 @@ on:
 
 permissions: {}
 
-# One run per package at a time, never cancelled, so that two runs do not race on the comment.
+# One run per package at a time, so that two runs do not race on the comment: a new run waits for the one in progress.
+# A run cancelled by hand writes no comment.
 concurrency:
   group: builders-${{ github.repository }}
   cancel-in-progress: false
@@ -143,7 +144,8 @@ jobs:
     name: Upload to win-builder
     needs: [version, tarball]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Three flavors of at most three five-minute attempts each, after the download.
+    timeout-minutes: 60
     permissions:
       actions: read
     outputs:
@@ -217,7 +219,7 @@ jobs:
   report:
     name: Report to the checklist pull request
     needs: [version, tarball, winbuilder, macbuilder]
-    if: ${{ always() && !inputs.dry-run && needs.version.outputs.pr != '' }}
+    if: ${{ !cancelled() && !inputs.dry-run && needs.version.outputs.pr != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -245,7 +247,7 @@ jobs:
   preview:
     name: Show the comment a real run would write
     needs: [version, tarball, winbuilder, macbuilder]
-    if: ${{ always() && inputs.dry-run && needs.version.result == 'success' }}
+    if: ${{ !cancelled() && inputs.dry-run && needs.version.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
