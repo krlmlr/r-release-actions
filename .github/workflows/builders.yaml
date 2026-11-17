@@ -1,0 +1,267 @@
+# Uploads an R package's checked tarball to win-builder and macbuilder, the tarball its check workflow built and checked,
+# never one built here, and reports both to the release's checklist pull request.
+# A package calls it from a workflow it dispatches by hand, on the release branch or, on the fast path, on `main`;
+# the README describes the inputs, the permissions the caller grants, and what the run reads and writes.
+# These checks inform the release and never gate it: the CRAN submission neither waits for them nor reads their results.
+#
+# Jobs, in order, each with only the permissions it needs:
+#   version     reads the version, only warning about dates, and finds the checklist pull request, if there is one
+#   tarball     finds the green push or dispatch run of the check workflow on the commit, and its tarball artifact,
+#               exactly as the CRAN submission does
+#   winbuilder  uploads the tarball by anonymous FTP for each win-builder flavor; the results arrive by email
+#   macbuilder  uploads the tarball to macbuilder, and polls its result page until the check ends or the wait times out
+#   report      a real run only: creates or updates the builders' one comment on the checklist pull request
+#   preview     a dry run only, with no permission: shows the comment a real run would write
+# A dry run does all of the reading and checking, uploads nothing, and writes nothing: its results are in the run's summary.
+
+name: Builder checks
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: "The full SHA of the commit whose checked tarball to upload, usually the dispatched branch's head (`github.sha`)"
+        required: true
+        type: string
+      dry-run:
+        description: "Check and report everything, but upload nothing and write no comment"
+        required: true
+        type: boolean
+      check-workflow:
+        description: "The file name of the check workflow whose run built and checked the tarball (cynkratemplate's by default)"
+        required: false
+        type: string
+        default: R-CMD-check.yaml
+      check-run-id:
+        description: "The check run to take the tarball from; empty takes the newest run on `sha` that holds it"
+        required: false
+        type: string
+        default: ""
+      winbuilder-flavors:
+        description: "Win-builder's flavors to upload to, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`"
+        required: false
+        type: string
+        default: R-devel R-release
+      macbuilder-flavor:
+        description: "Macbuilder's flavor, `r-devel` or `r-release`; its form offers only `r-devel` at times"
+        required: false
+        type: string
+        default: r-devel
+      macbuilder-timeout-minutes:
+        description: "How long to wait for macbuilder's result before reporting it as pending, at most 150"
+        required: false
+        type: number
+        default: 60
+
+permissions: {}
+
+# One run per package at a time, never cancelled, so that two runs do not race on the comment.
+concurrency:
+  group: builders-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Read the version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      package: ${{ steps.version.outputs.package }}
+      version: ${{ steps.version.outputs.version }}
+      pr: ${{ steps.checklist.outputs.pr }}
+    steps:
+      - name: Refuse a SHA that is not one
+        env:
+          SHA: ${{ inputs.sha }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=No full commit SHA::The input sha is '$SHA', not a full 40-character commit SHA."
+            exit 1
+          fi
+          if [ "$DRY_RUN" = true ]; then
+            echo "::notice title=Dry run::Nothing is uploaded or commented in this run."
+            printf '> [!NOTE]\n> **Dry run:** nothing is uploaded or commented.\n\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            DESCRIPTION
+            NEWS.md
+          sparse-checkout-cone-mode: false
+
+      # The builders run before the submission, maybe days before: a stale date only warns here.
+      - name: Read the version
+        id: version
+        uses: krlmlr/r-release-actions/actions/release-version@main
+        with:
+          dry-run: true
+
+      - name: Find the checklist pull request
+        id: checklist
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: find
+          package: ${{ steps.version.outputs.package }}
+          version: ${{ steps.version.outputs.version }}
+          require: false
+          token: ${{ github.token }}
+
+  tarball:
+    name: Find the checked tarball
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run-id: ${{ steps.tarball.outputs.run-id }}
+      run-url: ${{ steps.tarball.outputs.run-url }}
+      artifact-id: ${{ steps.tarball.outputs.artifact-id }}
+      sha256: ${{ steps.tarball.outputs.sha256 }}
+    steps:
+      - name: Find, download and verify the tarball
+        id: tarball
+        uses: krlmlr/r-release-actions/actions/checked-tarball@main
+        with:
+          sha: ${{ inputs.sha }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          check-workflow: ${{ inputs.check-workflow }}
+          run-id: ${{ inputs.check-run-id }}
+          branch: ${{ github.ref_name }}
+          token: ${{ github.token }}
+
+  winbuilder:
+    name: Upload to win-builder
+    needs: [version, tarball]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+    outputs:
+      results: ${{ steps.upload.outputs.results }}
+    steps:
+      - name: Download and verify the tarball
+        id: tarball
+        uses: krlmlr/r-release-actions/actions/checked-tarball@main
+        with:
+          sha: ${{ inputs.sha }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          run-id: ${{ needs.tarball.outputs.run-id }}
+          artifact-id: ${{ needs.tarball.outputs.artifact-id }}
+          sha256: ${{ needs.tarball.outputs.sha256 }}
+          token: ${{ github.token }}
+
+      - name: Upload, or show what would be sent
+        id: upload
+        uses: krlmlr/r-release-actions/actions/builders@main
+        with:
+          builder: winbuilder
+          tarball: ${{ steps.tarball.outputs.tarball }}
+          flavors: ${{ inputs.winbuilder-flavors }}
+          dry-run: ${{ inputs.dry-run }}
+
+  macbuilder:
+    name: Check on macbuilder
+    needs: [version, tarball]
+    runs-on: ubuntu-24.04
+    # The upload and the longest wait the input allows, with room to spare.
+    timeout-minutes: 180
+    permissions:
+      actions: read
+    outputs:
+      url: ${{ steps.check.outputs.url }}
+      outcome: ${{ steps.check.outputs.outcome }}
+      status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: Refuse a wait longer than the job
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.macbuilder-timeout-minutes }}
+        run: |
+          if ! [[ $TIMEOUT_MINUTES =~ ^[0-9]+$ ]] || [ "$TIMEOUT_MINUTES" -gt 150 ]; then
+            echo "::error title=No valid macbuilder wait::macbuilder-timeout-minutes is '$TIMEOUT_MINUTES', not a whole number of at most 150."
+            exit 1
+          fi
+
+      - name: Download and verify the tarball
+        id: tarball
+        uses: krlmlr/r-release-actions/actions/checked-tarball@main
+        with:
+          sha: ${{ inputs.sha }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          run-id: ${{ needs.tarball.outputs.run-id }}
+          artifact-id: ${{ needs.tarball.outputs.artifact-id }}
+          sha256: ${{ needs.tarball.outputs.sha256 }}
+          token: ${{ github.token }}
+
+      - name: Upload and wait for the result, or show what would be sent
+        id: check
+        uses: krlmlr/r-release-actions/actions/builders@main
+        with:
+          builder: macbuilder
+          tarball: ${{ steps.tarball.outputs.tarball }}
+          flavors: ${{ inputs.macbuilder-flavor }}
+          timeout-minutes: ${{ inputs.macbuilder-timeout-minutes }}
+          dry-run: ${{ inputs.dry-run }}
+
+  report:
+    name: Report to the checklist pull request
+    needs: [version, tarball, winbuilder, macbuilder]
+    if: ${{ always() && !inputs.dry-run && needs.version.outputs.pr != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Update the builders' comment
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: builders
+          pr: ${{ needs.version.outputs.pr }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          sha: ${{ inputs.sha }}
+          sha256: ${{ needs.tarball.outputs.sha256 }}
+          winbuilder-results: ${{ needs.winbuilder.outputs.results }}
+          winbuilder-job: ${{ needs.winbuilder.result }}
+          macbuilder-flavor: ${{ inputs.macbuilder-flavor }}
+          macbuilder-url: ${{ needs.macbuilder.outputs.url }}
+          macbuilder-outcome: ${{ needs.macbuilder.outputs.outcome }}
+          macbuilder-status: ${{ needs.macbuilder.outputs.status }}
+          macbuilder-job: ${{ needs.macbuilder.result }}
+          token: ${{ github.token }}
+
+  # The dry run's twin of `report`, with no permission: it shows the comment and writes nothing.
+  preview:
+    name: Show the comment a real run would write
+    needs: [version, tarball, winbuilder, macbuilder]
+    if: ${{ always() && inputs.dry-run && needs.version.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Show the builders' comment
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: builders
+          pr: ${{ needs.version.outputs.pr }}
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          sha: ${{ inputs.sha }}
+          sha256: ${{ needs.tarball.outputs.sha256 }}
+          winbuilder-results: ${{ needs.winbuilder.outputs.results }}
+          winbuilder-job: ${{ needs.winbuilder.result }}
+          macbuilder-flavor: ${{ inputs.macbuilder-flavor }}
+          macbuilder-job: ${{ needs.macbuilder.result }}
+          dry-run: true
+          token: ${{ github.token }}
