@@ -58,7 +58,7 @@ Inputs:
 
 What a run does, job by job:
 
-- **version** refuses a fork, and reads `Package:` and `Version:` from `DESCRIPTION`.
+- **version** reads `Package:` and `Version:` from `DESCRIPTION`.
   It stops on a development version, one with more than three components.
   It verifies the dates without changing them: exactly one `NEWS.md` section for the version,
   whose heading carries a date, the same as the `Date:` field that `DESCRIPTION` must have,
@@ -95,9 +95,24 @@ What a run does, job by job:
   Reply under it with CRAN's answer and what fixed it.
   It then updates the workflow's one comment there with the jobs' results.
 
+### Releasing from a fork
+
+A fork submits like any repository, from its own branch, check run and checklist pull request:
+the commit must head a branch of the fork, the tarball come from a push or dispatch run in the fork,
+and the checklist pull request be open in the fork, where the draft release and the attempt comments are written too.
+Nothing is written to the parent repository, the one the fork's repository page names as its source.
+Instead, the run ends with a block of commands that bring the parent in line by hand,
+in the log of the last job (**report**, or **upload** on a dry run) and in its summary:
+push the submitted commit to the branch of the same name in the parent, which fails rather than overwrite it;
+copy the draft release with its notes and tarball to the parent, or update the parent's draft of the version;
+and comment on the parent's checklist pull request with a link to the fork's attempts.
+The commands are printed, not run: someone with push access to the parent runs them from a clone of it
+in which the remote `upstream` is the parent and `origin` the fork, after a real run.
+A run outside a fork prints no such block.
+
 A dry run holds no token that can write, and writes nothing: no release, no comment, nothing to CRAN.
 Its results are in the run's summary.
-It still fails where a real run would stop before writing: on a fork, a development version, a missing or doubled `NEWS.md` section,
+It still fails where a real run would stop before writing: on a development version, a missing or doubled `NEWS.md` section,
 dates that differ, a missing `Date:`, a commit that heads no branch, a missing or mismatched tarball,
 a check run that is not green, an existing tag, or a published release.
 Its read-only token may not list draft releases, so it does not reliably catch several drafts of the version.

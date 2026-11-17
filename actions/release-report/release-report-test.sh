@@ -10,6 +10,7 @@
 #      the overall result is failure when any job failed.
 #   3. `attempt` posts a new comment numbered after the earlier attempts of the version, and edits none;
 #      unreadable comments fail with GitHub's error.
+#   4. `sync` prints, in a fork only, the commands that bring the parent in line, against the remotes `upstream` and `origin`.
 #
 # Usage:
 #   actions/release-report/release-report-test.sh
@@ -182,5 +183,35 @@ is "and nothing is written" "$(cat "$SCRATCH/writes")" ""
 out=$(run submitted 8 fakepkg 1.0.1)
 has "comments that cannot be read fail, with GitHub's error" "$out" "Reading the comments of #8 failed: gh: Not Found (HTTP 404)"
 has "under their own title" "$out" "::error title=The checklist pull request's comments cannot be read::"
+
+section "sync"
+answer "repos/owner/fakepkg" '{"fork": false, "parent": null}'
+out=$(run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
+has "outside a fork it succeeds" "$out" "exit 0"
+hasnt "and prints no synchronization" "$out" "synchronization"
+is "nor summarizes one" "$(cat "$SUMMARY")" ""
+answer "repos/owner/fakepkg" '{"fork": true, "parent": {"full_name": "upowner/fakepkg"}}'
+out=$(run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
+has "in a fork it succeeds" "$out" "exit 0"
+has "with a notice" "$out" "::notice title=Manual synchronization::owner/fakepkg is a fork of upowner/fakepkg"
+s=$(cat "$SUMMARY")
+has "the summary names the parent" "$s" "## Manual synchronization with upowner/fakepkg"
+has "says nothing changes it" "$s" "Nothing here changes upowner/fakepkg: run these commands by hand after this submission."
+has "names the remotes" "$s" "with the remotes \`upstream\` (upowner/fakepkg) and \`origin\` (owner/fakepkg)."
+has "fetches the commit from origin" "$s" "git fetch origin $SHA"
+has "and pushes it to the branch on upstream" "$s" "git push upstream $SHA:refs/heads/release-1.0.1"
+has "copies the draft release to the parent, targeting the commit" "$s" \
+  "gh release create v1.0.1 --repo upowner/fakepkg --draft --target $SHA --title 'fakepkg 1.0.1' --notes-file cran-sync/notes.md cran-sync/fakepkg_1.0.1.tar.gz"
+has "and points the parent's checklist at the fork's" "$s" "attempts are recorded in https://github.example/owner/fakepkg/pull/7."
+has "the log carries the commands too" "$out" "git push upstream $SHA:refs/heads/release-1.0.1"
+is "and nothing is written" "$(cat "$SCRATCH/writes")" ""
+out=$(DRY_RUN=true run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
+has "a dry run's apply after a real run" "$(cat "$SUMMARY")" "after a real run of this submission"
+out=$(run sync fakepkg 1.0.1 "$SHA" 'a..b' 7)
+has "a branch that is no branch name is a usage error" "$out" "exit 2"
+rm "$API/repos_owner_fakepkg.json"
+out=$(run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
+has "an unreadable repository fails with GitHub's error" "$out" \
+  "::error title=The repository cannot be read::Reading owner/fakepkg failed: gh: Not Found (HTTP 404)"
 
 done_testing

@@ -3,7 +3,7 @@
 # the README describes the inputs, the permissions the caller grants, and what the run reads and writes.
 #
 # Jobs, in order, each with only the permissions it needs:
-#   version  stops on a fork, a development version or dates that are not the submission date,
+#   version  stops on a development version or dates that are not the submission date,
 #            and finds the checklist pull request (a real run fails without one)
 #   tarball  checks that the commit heads a branch of the repository, finds the push or dispatch run of the check workflow
 #            on it and its tarball artifact, fails unless that run is green, downloads and verifies the tarball,
@@ -14,6 +14,8 @@
 #   upload   posts the tarball to CRAN's form in its two steps, without a token that can write
 #   report   a real run only: records the attempt in a new comment on the checklist pull request,
 #            and updates the workflow's one comment there
+# In a fork, the last job of the run (`report`, or `upload` on a dry run) prints the commands that bring the parent
+# repository in line, for someone with push access to it to run by hand; nothing here writes to the parent.
 # A dry run does all of the reading and checking, holds no token that can write, and writes and sends nothing:
 # its results are in the run's summary.
 
@@ -66,16 +68,11 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       pr: ${{ steps.checklist.outputs.pr }}
     steps:
-      - name: Refuse a fork and a SHA that is not one
+      - name: Refuse a SHA that is not one
         env:
-          FORK: ${{ github.event.repository.fork }}
           SHA: ${{ inputs.sha }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: |
-          if [ "$FORK" = true ]; then
-            echo "::error title=Fork::$GITHUB_REPOSITORY is a fork; submit from the package's own repository."
-            exit 1
-          fi
           if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error title=No full commit SHA::The input sha is '$SHA', not a full 40-character commit SHA."
             exit 1
@@ -289,6 +286,19 @@ jobs:
           sha: ${{ inputs.sha }}
           dry-run: ${{ inputs.dry-run }}
 
+      - name: Print the manual synchronization with the parent of a fork
+        if: inputs.dry-run
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: sync
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          sha: ${{ inputs.sha }}
+          branch: ${{ github.ref_name }}
+          pr: ${{ needs.version.outputs.pr }}
+          dry-run: true
+          token: ${{ github.token }}
+
   report:
     name: Report to the checklist pull request
     needs: [version, tarball, draft, upload]
@@ -331,4 +341,16 @@ jobs:
             - Tarball: ${{ needs.tarball.outputs.sha256 && format('SHA-256 `{0}`', needs.tarball.outputs.sha256) || 'none found' }}
             - Check run: ${{ needs.tarball.outputs.run-url || 'none found' }}
             - Draft release: ${{ needs.draft.outputs.release-url || 'none' }}
+          token: ${{ github.token }}
+
+      - name: Print the manual synchronization with the parent of a fork
+        if: always() && needs.upload.result == 'success'
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: sync
+          package: ${{ needs.version.outputs.package }}
+          version: ${{ needs.version.outputs.version }}
+          sha: ${{ inputs.sha }}
+          branch: ${{ github.ref_name }}
+          pr: ${{ needs.version.outputs.pr }}
           token: ${{ github.token }}

@@ -22,6 +22,11 @@
 #     the attempt's number, the submitted commit, the tarball's SHA-256, and links to the run and the draft release.
 #     The number counts github-actions[bot]'s earlier comments carrying
 #     `<!-- cran-submission-attempt: <package> <version> -->` on the pull request.
+#   sync <package> <version> <sha> <branch> [<pr>]
+#     In a fork only: prints the commands that bring the parent repository, read from the repository's `parent`,
+#     in line with the submission, to be run by hand from a clone with push access to the parent,
+#     where the remote `upstream` is the parent and `origin` the fork. Outside a fork it prints nothing.
+#     The commands go to the log and to the step summary; nothing here runs them.
 #
 # Environment:
 #   GH_TOKEN, GH_REPO    a token with `pull-requests: write` (`read` for `find`), and the repository, owner/name
@@ -31,6 +36,7 @@
 #   RESULTS              `status`: one `<job>=<result>` per line, as `needs.<job>.result` gives it
 #   DETAILS              `status`: Markdown appended below the job results, may be empty
 #   DRAFT_URL            `attempt`: the draft release
+#   DRY_RUN              `sync`: `true` says the commands apply after a real run
 #   GITHUB_SERVER_URL, GITHUB_RUN_ID, GITHUB_RUN_NUMBER, GITHUB_RUN_ATTEMPT, GITHUB_REF_NAME, GITHUB_EVENT_NAME
 #                        the run that is reported
 #   GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, GITHUB_ACTIONS
@@ -269,10 +275,64 @@ cmd_attempt() {
   summary "- Recorded attempt $n of $pkg $version on #$pr." ""
 }
 
+cmd_sync() {
+  [ $# -eq 4 ] || [ $# -eq 5 ] || usage
+  local pkg=$1 version=$2 sha=$3 branch=$4 pr=${5:-}
+  { valid_package "$pkg" && valid_version "$version" && valid_sha "$sha" && [[ $pr =~ ^[0-9]*$ ]] &&
+    [[ $branch =~ ^[A-Za-z0-9._/-]+$ ]] && [[ $branch != *..* ]]; } || usage
+  local info errf fork parent tag="v$version" tarball="${pkg}_$version.tar.gz" when block
+  errf=$(mktemp)
+  block=$(mktemp)
+  # shellcheck disable=SC2064  # expand now
+  trap "rm -f '$errf' '$block'" EXIT
+  info=$("$gh" api "repos/$repo" --jq '[.fork, (.parent.full_name // "")] | @tsv' 2>"$errf") ||
+    fail "Synchronization" "The repository cannot be read" \
+      "Reading $repo failed: $(head -n 1 "$errf"), so whether it is a fork, and of which repository, is unknown." -- \
+      "If $repo is a fork, bring its parent in line by hand: push \`$sha\` to \`$branch\` there and copy the draft release of $pkg $version."
+  IFS=$'\t' read -r fork parent <<<"$info"
+  [ "$fork" = true ] || return 0
+  valid_repo "$parent" ||
+    fail "Synchronization" "The fork's parent cannot be read" \
+      "$repo is a fork, but its parent reads as '$parent'." -- \
+      "Bring the parent in line by hand: push \`$sha\` to \`$branch\` there and copy the draft release of $pkg $version."
+  when="after this submission"
+  [ "${DRY_RUN:-false}" != true ] || when="after a real run of this submission"
+  local checklist="<!-- release-checklist: $pkg $version -->" ref="the fork's checklist pull request"
+  [ -z "$pr" ] || ref="${GITHUB_SERVER_URL:-https://github.com}/$repo/pull/$pr"
+  {
+    echo "# $repo is a fork of $parent. Run $when, from a clone with push access to $parent,"
+    echo "# with the remotes \`upstream\` ($parent) and \`origin\` ($repo)."
+    echo "# The submitted commit, onto the same branch of the parent; the push fails rather than overwrite it."
+    echo "git fetch origin $sha"
+    echo "git push upstream $sha:refs/heads/$branch"
+    echo "# The draft release, with its notes and the submitted tarball; the tag is written at acceptance, not now."
+    echo "mkdir -p cran-sync"
+    echo "gh release download $tag --repo $repo --pattern '$tarball' --dir cran-sync --clobber"
+    echo "gh release view $tag --repo $repo --json body --jq .body >cran-sync/notes.md"
+    echo "if [ \"\$(gh release view $tag --repo $parent --json isDraft --jq .isDraft 2>/dev/null)\" = true ]; then"
+    echo "  gh release edit $tag --repo $parent --target $sha --notes-file cran-sync/notes.md"
+    echo "  gh release upload $tag --repo $parent --clobber cran-sync/$tarball"
+    echo "else"
+    echo "  gh release create $tag --repo $parent --draft --target $sha --title '$pkg $version' --notes-file cran-sync/notes.md cran-sync/$tarball"
+    echo "fi"
+    echo "# The parent's checklist pull request, pointed at the attempts recorded in the fork."
+    echo "pr=\$(gh pr list --repo $parent --state open --limit 100 --json number,body --jq '.[] | select(.body | contains(\"$checklist\")) | .number')"
+    echo "gh pr comment \"\$pr\" --repo $parent --body 'CRAN submission of $pkg $version from $repo at $sha: $(run_url); attempts are recorded in $ref.'"
+  } >"$block"
+  group "Manual synchronization with $parent"
+  cat "$block"
+  endgroup
+  notice "Manual synchronization" "$repo is a fork of $parent: the run's summary has the commands to run by hand $when."
+  summary "## Manual synchronization with $parent" "" \
+    "$repo is a fork of $parent. Nothing here changes $parent: run these commands by hand $when." "" \
+    '```sh' "$(cat "$block")" '```' ""
+}
+
 case "${1:-}" in
   find) shift; cmd_find "$@" ;;
   submitted) shift; cmd_submitted "$@" ;;
   status) shift; cmd_status "$@" ;;
   attempt) shift; cmd_attempt "$@" ;;
+  sync) shift; cmd_sync "$@" ;;
   *) usage ;;
 esac

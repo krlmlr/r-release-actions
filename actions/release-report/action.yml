@@ -5,24 +5,26 @@ description: >
   refuses a version an earlier attempt submitted (mode `submitted`),
   keeps the workflow's one comment there, updated in place (mode `status`),
   or records a submission attempt in a new comment (mode `attempt`),
+  or, in a fork, prints the commands that bring the parent repository in line by hand (mode `sync`),
   with release-report.sh beside this file.
-  The job needs `pull-requests: read` for `find` and `submitted`, and `pull-requests: write` otherwise.
+  The job needs `pull-requests: read` for `find` and `submitted`, nothing beyond reading the repository for `sync`,
+  and `pull-requests: write` otherwise.
 
 inputs:
   mode:
-    description: "`find`, `submitted`, `status` or `attempt`"
+    description: "`find`, `submitted`, `status`, `attempt` or `sync`"
     required: true
   token:
     description: "A token with the permission the mode needs"
     required: true
   pr:
-    description: "`submitted`, `status`, `attempt`: the checklist pull request's number"
+    description: "`submitted`, `status`, `attempt`, `sync`: the checklist pull request's number"
     default: ""
   package:
-    description: "`find`, `submitted`, `attempt`: the package name"
+    description: "`find`, `submitted`, `attempt`, `sync`: the package name"
     default: ""
   version:
-    description: "`find`, `submitted`, `attempt`: the release version"
+    description: "`find`, `submitted`, `attempt`, `sync`: the release version"
     default: ""
   require:
     description: "`find`: `true` fails without exactly one checklist pull request"
@@ -40,7 +42,7 @@ inputs:
     description: "`status`: Markdown appended below the job results"
     default: ""
   sha:
-    description: "`attempt`: the full SHA of the submitted commit"
+    description: "`attempt`, `sync`: the full SHA of the submitted commit"
     default: ""
   sha256:
     description: "`attempt`: the tarball's SHA-256"
@@ -49,13 +51,16 @@ inputs:
     description: "`submitted`: `true` lets a version an earlier attempt submitted through"
     default: "false"
   dry-run:
-    description: "`submitted`: `true` only warns about a version an earlier attempt submitted"
+    description: "`submitted`: `true` only warns about a version an earlier attempt submitted; `sync`: `true` marks the commands as for a real run"
     default: "false"
   tarball-name:
     description: "`attempt`: the tarball's file name"
     default: ""
   draft-url:
     description: "`attempt`: the draft release's URL"
+    default: ""
+  branch:
+    description: "`sync`: the branch the submission was dispatched on"
     default: ""
 
 outputs:
@@ -85,6 +90,7 @@ runs:
         DRAFT_URL: ${{ inputs.draft-url }}
         RESUBMIT: ${{ inputs.resubmit }}
         DRY_RUN: ${{ inputs.dry-run }}
+        BRANCH: ${{ inputs.branch }}
       run: |
         script="$GITHUB_ACTION_PATH/release-report.sh"
         case "$MODE" in
@@ -92,6 +98,7 @@ runs:
           submitted) "$script" submitted "$PR" "$PACKAGE" "$VERSION" ;;
           status) "$script" status "$PR" "$KEY" "$TITLE" ;;
           attempt) "$script" attempt "$PR" "$PACKAGE" "$VERSION" "$SHA" "$SHA256" "$TARBALL_NAME" ;;
+          sync) "$script" sync "$PACKAGE" "$VERSION" "$SHA" "$BRANCH" "$PR" ;;
           *) echo "::error::Unknown mode: $MODE"; exit 2 ;;
         esac
       shell: bash
