@@ -56,4 +56,10 @@ fails "a quote is not" valid_version '1.2.3"'
 succeeds "a full SHA is one" valid_sha 0123456789abcdef0123456789abcdef01234567
 fails "a short one is not" valid_sha 0123456789
 
+section "counting lines"
+is "no input is zero lines, not a failure" "$(count_lines '')" 0
+is "a last line without a newline counts" "$(count_lines $'a\nb')" 2
+is "with one, too" "$(count_lines $'a\nb\n')" 2
+is "blank lines do not count" "$(count_lines $'a\n\n  \nb')" 2
+
 done_testing

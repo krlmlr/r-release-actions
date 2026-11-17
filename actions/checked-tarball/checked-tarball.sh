@@ -6,9 +6,10 @@
 # That workflow keeps the file as a raw (unzipped) artifact named `<package>_<version>.tar.gz`,
 # uploaded with `actions/upload-artifact` and `archive: false`, so that the artifact's digest is the file's SHA-256.
 #
-#   commit <sha>
+#   commit <sha> [<branch>]
 #     The commit is the head of a branch of GH_REPO (`commits/<sha>/branches-where-head`),
-#     so a commit that exists only in a fork, or one a later push superseded, is refused.
+#     so a commit that exists only in a fork, or one a later push superseded, is refused;
+#     with <branch>, the branch the submission was dispatched on, the commit must be that branch's head.
 #   find <sha> <package> <version>
 #     The run is CHECK_RUN_ID when set, otherwise the newest run of the workflow CHECK_WORKFLOW on <sha> that holds the artifact.
 #     Either way it is a push or dispatch run of <sha> in GH_REPO: a pull request run checks a merge commit,
@@ -143,19 +144,26 @@ cmd_find() {
 }
 
 cmd_commit() {
-  [ $# -eq 1 ] || usage
-  local sha=$1 repo=${GH_REPO:?} branches
+  [ $# -eq 1 ] || [ $# -eq 2 ] || usage
+  local sha=$1 branch=${2:-} repo=${GH_REPO:?} branches b heads=''
   { valid_sha "$sha" && valid_repo "$repo"; } || usage
   # GitHub resolves a commit of any fork in the repository's network, so resolving it proves nothing;
   # a branch of this repository whose head it is does.
   branches=$(api "repos/$repo/commits/$sha/branches-where-head" --jq '.[].name') ||
     fail "Commit" "The commit's branches cannot be read" "Asking $repo which branches \`$sha\` heads failed: $(api_error)." -- \
       "Check that the job holds \`contents: read\` and that \`sha\` is a commit of $repo, then dispatch the submission again."
-  branches=$(printf '%s\n' "$branches" | paste -s -d ' ' -)
   [ -n "$branches" ] ||
     fail "Commit" "The commit is no branch head" \
       "\`$sha\` is the head of no branch of $repo, so it may be a fork's commit or one a later push superseded. Nothing was drafted or uploaded." -- \
       "Dispatch the submission on the release branch, or on \`main\` on the fast path, and pass its head, \`\${{ github.sha }}\`."
+  if [ -n "$branch" ]; then
+    while IFS= read -r b; do [ "$b" != "$branch" ] || heads=yes; done <<<"$branches"
+    [ -n "$heads" ] ||
+      fail "Commit" "The commit is not the head of the dispatched branch" \
+        "The submission was dispatched on \`$branch\`, but \`$sha\` is the head of \`$(paste -s -d ' ' - <<<"$branches")\` in $repo. Nothing was drafted or uploaded." -- \
+        "Dispatch the submission on the branch whose head is to be submitted, and pass its head, \`\${{ github.sha }}\`."
+  fi
+  branches=$(printf '%s\n' "$branches" | paste -s -d ' ' -)
   val "commit" "$sha"
   val "head of" "$branches"
   summary "- Commit: $(commit_link "$sha"), the head of \`$branches\` in $repo" ""

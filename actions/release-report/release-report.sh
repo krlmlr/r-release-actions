@@ -4,11 +4,12 @@
 # Report to the release's checklist pull request.
 #
 #   find <package> <version>
-#     The checklist pull request is the open pull request whose body carries
-#     `<!-- release-checklist: <package> <version> -->` and whose author is either an App's bot account
-#     with the head branch in this repository, or a person with write access to the repository,
-#     or, where the token cannot read that, an owner, member or collaborator;
-#     one carrying the marker by anyone else, or by a bot from a fork, is named in a warning and ignored.
+#     The checklist pull request is the open pull request whose body's first line is exactly
+#     `<!-- release-checklist: <package> <version> -->` and whose author is either a bot account
+#     with the head branch in this repository, other than a dependency updater's, or a person with write access,
+#     or, where the token cannot read that, an owner, member or collaborator.
+#     One carrying the marker elsewhere in its body, by a dependency updater, by a bot from a fork,
+#     or by anyone else is named in a warning and ignored.
 #     Writes `pr` to GITHUB_OUTPUT. None, or more than one, fails when REQUIRE is `true`, and warns otherwise.
 #   submitted <pr> <package> <version>
 #     Refuses a version that an earlier attempt comment records, whatever its commit or tarball,
@@ -71,22 +72,40 @@ cmd_find() {
   errf=$(mktemp)
   # shellcheck disable=SC2064  # expand now
   trap "rm -f '$errf'" EXIT
+  local first_line='(.body // "") | split("\n")[0] | rtrimstr("\r")'
   found=$("$gh" api --paginate "repos/$repo/pulls?state=open&per_page=100" \
-    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | [.number, .author_association, .user.login, .user.type, (.head.repo.full_name // \"-\")] | @tsv" 2>"$errf") ||
+    --jq ".[] | select((.body // \"\") | contains(\"$marker\"))
+      | [.number, .author_association, .user.login, .user.type, (.head.repo.full_name // \"-\"), (($first_line) == \"$marker\")]
+      | @tsv" 2>"$errf") ||
     fail "Checklist" "The open pull requests cannot be read" "Listing the open pull requests of $repo failed: $(head -n 1 "$errf")." -- \
       "Check that the calling job grants \`pull-requests: read\`, then dispatch the submission again."
-  # An App's bot account (type `Bot`, login `<app>[bot]`) has no collaborator permission to read. Its pull request counts
-  # when its head branch is in this repository: only an App installed here with write access can open such a pull request.
-  # A bot's pull request from a fork is ignored with a warning.
+  # The marker counts only as the body's first line: a body that quotes text from elsewhere, such as release notes,
+  # must not make a pull request the checklist.
+  # A bot account (type `Bot`, login `<app>[bot]`) has no collaborator permission to read. Its pull request counts
+  # when its head branch is in this repository, which needs `pull-requests: write` on it: an App installed with that,
+  # or any workflow of the repository through its token, as github-actions[bot]. So the marker must start the body,
+  # and more than one such pull request fails a real run rather than letting one of them be chosen.
+  # Dependabot's and Renovate's pull requests quote dependencies' release notes, and are ignored with a warning,
+  # as is a bot's pull request from a fork.
   # A person needs write access, read from `collaborators/<login>/permission` (admin, maintain and write read as
   # `admin` or `write`). That endpoint answers 404 for an App's bot account and may for someone outside the repository,
   # so an unreadable permission falls back to the author's association with the repository:
   # anyone but an owner, member or collaborator is ignored with a warning, as a stray marker must not block a release;
   # an owner, member or collaborator whose access cannot be verified fails a real run with GitHub's error,
   # and a dry run warns and accepts them.
-  local number assoc login type head perm trusted='' others=''
-  while IFS=$'\t' read -r number assoc login type head; do
+  local number assoc login type head first perm trusted='' others=''
+  while IFS=$'\t' read -r number assoc login type head first; do
     [ -n "$number" ] || continue
+    if [ "$first" != true ]; then
+      others+="#$number by $login (the marker is not the body's first line) "
+      continue
+    fi
+    case "$login" in
+      'dependabot[bot]' | 'renovate[bot]')
+        others+="#$number by $login (a dependency update) "
+        continue
+        ;;
+    esac
     if [ "$type" = Bot ] && [[ $login =~ ^[A-Za-z0-9-]+\[bot\]$ ]]; then
       if [ "$head" = "$repo" ]; then
         trusted+="$number"$'\n'
@@ -123,7 +142,8 @@ cmd_find() {
   done <<<"$found"
   trusted=${trusted%$'\n'}
   [ -z "$others" ] ||
-    warn "Checklist pull request ignored" "Ignored ${others}: the checklist pull request must be opened by someone with write access, or by an App from a branch of $repo."
+    warn "Checklist pull request ignored" "Ignored ${others}: the checklist pull request starts its body with the marker \
+and is opened by someone with write access or by an App from a branch of $repo."
   n=$(count_lines "$trusted")
   if [ "$n" -eq 1 ]; then
     say "Checklist pull request: #$trusted"
@@ -135,11 +155,11 @@ cmd_find() {
   [ "$n" -eq 0 ] || what="$n open pull requests ($(printf '%s' "$trusted" | sed 's/^/#/' | paste -s -d ' ' -))"
   if [ "${REQUIRE:-false}" = true ]; then
     fail "Checklist" "No single checklist pull request" \
-      "There is $what by someone with write access or an App whose body carries \`$marker\`; the submission records each attempt there. Nothing was drafted or uploaded." -- \
-      "Put the marker \`$marker\` into the body of the release's checklist pull request, and only of that one, then dispatch the submission again."
+      "There is $what by someone with write access or an App whose body starts with \`$marker\`; the submission records each attempt there. Nothing was drafted or uploaded." -- \
+      "Start the body of the release's checklist pull request, and only of that one, with the line \`$marker\`, then dispatch the submission again."
   fi
-  warn "No single checklist pull request" "There is $what whose body carries $marker; a real run fails."
-  summary "- Checklist pull request: $what carries \`$marker\`; a real run fails." ""
+  warn "No single checklist pull request" "There is $what whose body starts with $marker; a real run fails."
+  summary "- Checklist pull request: $what starts with \`$marker\`; a real run fails." ""
   output pr ""
 }
 
@@ -279,8 +299,8 @@ cmd_sync() {
   [ $# -eq 4 ] || [ $# -eq 5 ] || usage
   local pkg=$1 version=$2 sha=$3 branch=$4 pr=${5:-}
   { valid_package "$pkg" && valid_version "$version" && valid_sha "$sha" && [[ $pr =~ ^[0-9]*$ ]] &&
-    [[ $branch =~ ^[A-Za-z0-9._/-]+$ ]] && [[ $branch != *..* ]]; } || usage
-  local info errf fork parent tag="v$version" tarball="${pkg}_$version.tar.gz" when block
+    git check-ref-format --branch "$branch" >/dev/null 2>&1; } || usage
+  local info errf fork parent tag="v$version" tarball="${pkg}_$version.tar.gz" when block qbranch
   errf=$(mktemp)
   block=$(mktemp)
   # shellcheck disable=SC2064  # expand now
@@ -299,26 +319,44 @@ cmd_sync() {
   [ "${DRY_RUN:-false}" != true ] || when="after a real run of this submission"
   local checklist="<!-- release-checklist: $pkg $version -->" ref="the fork's checklist pull request"
   [ -z "$pr" ] || ref="${GITHUB_SERVER_URL:-https://github.com}/$repo/pull/$pr"
-  {
-    echo "# $repo is a fork of $parent. Run $when, from a clone with push access to $parent,"
-    echo "# with the remotes \`upstream\` ($parent) and \`origin\` ($repo)."
-    echo "# The submitted commit, onto the same branch of the parent; the push fails rather than overwrite it."
-    echo "git fetch origin $sha"
-    echo "git push upstream $sha:refs/heads/$branch"
-    echo "# The draft release, with its notes and the submitted tarball; the tag is written at acceptance, not now."
-    echo "mkdir -p cran-sync"
-    echo "gh release download $tag --repo $repo --pattern '$tarball' --dir cran-sync --clobber"
-    echo "gh release view $tag --repo $repo --json body --jq .body >cran-sync/notes.md"
-    echo "if [ \"\$(gh release view $tag --repo $parent --json isDraft --jq .isDraft 2>/dev/null)\" = true ]; then"
-    echo "  gh release edit $tag --repo $parent --target $sha --notes-file cran-sync/notes.md"
-    echo "  gh release upload $tag --repo $parent --clobber cran-sync/$tarball"
-    echo "else"
-    echo "  gh release create $tag --repo $parent --draft --target $sha --title '$pkg $version' --notes-file cran-sync/notes.md cran-sync/$tarball"
-    echo "fi"
-    echo "# The parent's checklist pull request, pointed at the attempts recorded in the fork."
-    echo "pr=\$(gh pr list --repo $parent --state open --limit 100 --json number,body --jq '.[] | select(.body | contains(\"$checklist\")) | .number')"
-    echo "gh pr comment \"\$pr\" --repo $parent --body 'CRAN submission of $pkg $version from $repo at $sha: $(run_url); attempts are recorded in $ref.'"
-  } >"$block"
+  # The branch passed `git check-ref-format`, which still allows characters the shell interprets.
+  qbranch=$(printf '%q' "$branch")
+  # The parent's checklist pull request, chosen as `find` chooses one, except that a person's access is not read:
+  # whoever runs this can see the pull request it names.
+  local select_pr
+  select_pr=".[]
+  | select(((.body // \"\") | split(\"\\n\")[0] | rtrimstr(\"\\r\")) == \"$checklist\")
+  | select(.user.login != \"dependabot[bot]\" and .user.login != \"renovate[bot]\")
+  | select(.user.type != \"Bot\" or .head.repo.full_name == \"$parent\")
+  | .number"
+  cat >"$block" <<EOF
+# $repo is a fork of $parent. Run $when, from a clone with push access to $parent,
+# with the remotes \`upstream\` ($parent) and \`origin\` ($repo).
+set -euo pipefail
+# The submitted commit, onto the same branch of the parent; the push fails rather than overwrite it.
+git fetch origin $sha
+git push upstream $sha:refs/heads/$qbranch
+# The draft release, with its notes and the submitted tarball; the tag is written at acceptance, not now.
+mkdir -p cran-sync
+gh release download $tag --repo $repo --pattern '$tarball' --dir cran-sync --clobber
+gh release view $tag --repo $repo --json body --jq .body >cran-sync/notes.md
+# A parent without a draft of the version answers no release; \`gh release create\` then fails if one is published.
+if [ "\$(gh release view $tag --repo $parent --json isDraft --jq .isDraft 2>/dev/null)" = true ]; then
+  gh release edit $tag --repo $parent --target $sha --notes-file cran-sync/notes.md
+  gh release upload $tag --repo $parent --clobber cran-sync/$tarball
+else
+  gh release create $tag --repo $parent --draft --target $sha --title '$pkg $version' \\
+    --notes-file cran-sync/notes.md cran-sync/$tarball
+fi
+# The parent's checklist pull request, pointed at the attempts recorded in the fork; exactly one must match.
+prs=\$(gh api --paginate 'repos/$parent/pulls?state=open&per_page=100' --jq '$select_pr')
+if [ "\$(printf '%s\\n' "\$prs" | awk 'NF { n++ } END { print n + 0 }')" -ne 1 ]; then
+  echo "Expected one checklist pull request in $parent, found: \$(paste -s -d ' ' - <<<"\${prs:-none}")" >&2
+  exit 1
+fi
+gh pr comment "\$prs" --repo $parent \\
+  --body 'CRAN submission of $pkg $version from $repo at $sha: $(run_url); attempts are recorded in $ref.'
+EOF
   group "Manual synchronization with $parent"
   cat "$block"
   endgroup

@@ -65,7 +65,7 @@ What a run does, job by job:
   within a day of the run's date in UTC.
   A stale date fails a real run and only warns on a dry run.
   It then finds the checklist pull request, which a real run requires.
-- **tarball** checks that `sha` is the head of a branch of the repository,
+- **tarball** checks that `sha` is the head of the branch the submission was dispatched on, in the repository,
   because GitHub resolves a commit that exists only in a fork as well.
   It finds the newest push or dispatch run of the check workflow on `sha` in the repository that holds the tarball,
   skipping pull request runs, which check a merge commit, and runs of a fork's branch; a given `check-run-id` must be such a run.
@@ -98,7 +98,7 @@ What a run does, job by job:
 ### Releasing from a fork
 
 A fork submits like any repository, from its own branch, check run and checklist pull request:
-the commit must head a branch of the fork, the tarball come from a push or dispatch run in the fork,
+the commit must head the dispatched branch of the fork, the tarball come from a push or dispatch run in the fork,
 and the checklist pull request be open in the fork, where the draft release and the attempt comments are written too.
 Nothing is written to the parent repository, the one the fork's repository page names as its source.
 Instead, the run ends with a block of commands that bring the parent in line by hand,
@@ -109,11 +109,14 @@ and comment on the parent's checklist pull request with a link to the fork's att
 The commands are printed, not run: someone with push access to the parent runs them from a clone of it
 in which the remote `upstream` is the parent and `origin` the fork, after a real run.
 A run outside a fork prints no such block.
+A fork that carries a caller of this workflow can submit the package on its own,
+so the maintainer's confirmation email from CRAN can come from a run in any such fork:
+follow its link only for a submission you expect, and check the commit and the run it names.
 
 A dry run holds no token that can write, and writes nothing: no release, no comment, nothing to CRAN.
 Its results are in the run's summary.
 It still fails where a real run would stop before writing: on a development version, a missing or doubled `NEWS.md` section,
-dates that differ, a missing `Date:`, a commit that heads no branch, a missing or mismatched tarball,
+dates that differ, a missing `Date:`, a commit that is not the head of the dispatched branch, a missing or mismatched tarball,
 a check run that is not green, an existing tag, or a published release.
 Its read-only token may not list draft releases, so it does not reliably catch several drafts of the version.
 It only warns about a stale date, a missing checklist pull request, a version submitted before, and a queued submission.
@@ -140,11 +143,15 @@ Each step writes what it read, checked and did to the run's summary, with how to
   so on a release branch someone dispatches the check workflow on the branch before dispatching the submission.
 - **The checklist pull request.** One open pull request tracks the release:
   the release branch's pull request into `main`, or an empty pull request beside a fix made on `main`.
-  Its body carries the marker `<!-- release-checklist: <package> X.Y.Z -->`.
+  The first line of its body is exactly the marker `<!-- release-checklist: <package> X.Y.Z -->`;
+  a pull request that carries the marker further down, as one quoting other text might, is ignored with a warning.
   A GitHub App opens it, which is the normal case, or a person with write access to the repository.
-  An App's pull request, by a bot account (`<app>[bot]`), counts when its head branch is in the repository itself,
-  because only an App installed on the repository with write access can open such a pull request;
-  an App's pull request from a fork is ignored with a warning naming it.
+  A bot account's pull request (`<app>[bot]`) counts when its head branch is in the repository itself.
+  Opening one needs only `pull-requests: write` on the repository:
+  any App installed with that permission can, and so can any workflow of the repository with its token, as `github-actions[bot]`.
+  This is why the marker must start the body, and why a real run fails unless exactly one pull request counts.
+  Dependabot's and Renovate's pull requests, which quote their dependencies' release notes, are ignored with a warning,
+  as is a bot's pull request from a fork.
   A person's counts when the person has write, maintain or admin access.
   Where a person's access cannot be read, the author's association decides:
   a pull request by anyone but an owner, member or collaborator is ignored with a warning, so a stray marker blocks nothing,

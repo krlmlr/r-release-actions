@@ -142,6 +142,14 @@ answer "repos/owner/fakepkg/commits/$SHA/branches-where-head" '[{"name": "releas
 out=$(run commit "$SHA")
 has "the head of a branch passes" "$out" "exit 0"
 has "naming it" "$(cat "$SUMMARY")" "the head of \`release-1.0.1\` in owner/fakepkg"
+out=$(run commit "$SHA" release-1.0.1)
+has "the head of the dispatched branch passes" "$out" "exit 0"
+answer "repos/owner/fakepkg/commits/$SHA/branches-where-head" '[{"name": "release-1.0.1"}, {"name": "rc"}]'
+out=$(run commit "$SHA" rc)
+has "as the head of one of several branches" "$out" "exit 0"
+out=$(run commit "$SHA" main)
+has "the head of another branch than the dispatched one fails, naming both" "$out" \
+  "::error title=The commit is not the head of the dispatched branch::The submission was dispatched on \`main\`, but \`$SHA\` is the head of \`release-1.0.1 rc\` in owner/fakepkg."
 answer "repos/owner/fakepkg/commits/$OTHER/branches-where-head" '[]'
 out=$(run commit "$OTHER")
 has "a commit that heads no branch, a fork's or a superseded one, fails" "$out" "::error title=The commit is no branch head::"

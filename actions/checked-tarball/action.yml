@@ -20,6 +20,9 @@ inputs:
   check-workflow:
     description: "The check workflow's file name, whose run built the tarball"
     default: "R-CMD-check.yaml"
+  branch:
+    description: "The branch the submission was dispatched on, whose head `sha` must be; empty accepts the head of any branch"
+    default: ""
   run-id:
     description: "The check run to take the tarball from; empty searches the runs on `sha`"
     default: ""
@@ -61,10 +64,11 @@ runs:
         CHECK_WORKFLOW: ${{ inputs.check-workflow }}
         CHECK_RUN_ID: ${{ inputs.run-id }}
         SHA: ${{ inputs.sha }}
+        BRANCH: ${{ inputs.branch }}
         PACKAGE: ${{ inputs.package }}
         VERSION: ${{ inputs.version }}
       run: |
-        "$GITHUB_ACTION_PATH/checked-tarball.sh" commit "$SHA"
+        "$GITHUB_ACTION_PATH/checked-tarball.sh" commit "$SHA" ${BRANCH:+"$BRANCH"}
         "$GITHUB_ACTION_PATH/checked-tarball.sh" find "$SHA" "$PACKAGE" "$VERSION"
       shell: bash
 

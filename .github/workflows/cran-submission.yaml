@@ -5,7 +5,7 @@
 # Jobs, in order, each with only the permissions it needs:
 #   version  stops on a development version or dates that are not the submission date,
 #            and finds the checklist pull request (a real run fails without one)
-#   tarball  checks that the commit heads a branch of the repository, finds the push or dispatch run of the check workflow
+#   tarball  checks that the commit heads the dispatched branch of the repository, finds the push or dispatch run of the check workflow
 #            on it and its tarball artifact, fails unless that run is green, downloads and verifies the tarball,
 #            refuses a version an earlier attempt submitted (unless `resubmit`),
 #            and refuses while CRAN's incoming queue holds a submission of the package
@@ -131,6 +131,7 @@ jobs:
           version: ${{ needs.version.outputs.version }}
           check-workflow: ${{ inputs.check-workflow }}
           run-id: ${{ inputs.check-run-id }}
+          branch: ${{ github.ref_name }}
           token: ${{ github.token }}
 
       # An upload whose confirmation link nobody followed does not show in CRAN's queue; its attempt comment does.

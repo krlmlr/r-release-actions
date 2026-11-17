@@ -53,7 +53,8 @@ section "find"
 answer "repos/owner/fakepkg/collaborators/maint/permission" '{"permission": "write"}'
 answer "repos/owner/fakepkg/collaborators/stranger/permission" '{"permission": "read"}'
 answer "repos/owner/fakepkg/collaborators/other/permission" '{"permission": "admin"}'
-answer "$PULLS" "[$(pull 4 CONTRIBUTOR stranger "$MARK"), $(pull 7 NONE maint "Checklist\n\n$MARK"), $(pull 8 OWNER maint '<!-- release-checklist: fakepkg 1.0.10 -->')]"
+answer "$PULLS" "[$(pull 4 CONTRIBUTOR stranger "$MARK"), $(pull 7 NONE maint "$MARK\n\nChecklist"),
+  $(pull 8 OWNER maint '<!-- release-checklist: fakepkg 1.0.10 -->')]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
 has "it succeeds" "$out" "exit 0"
 is "with the pull request of the author with write access" "$(cat "$SCRATCH/output")" "pr=7"
@@ -68,7 +69,8 @@ has "a dry run lets a member's stand in" "$(cat "$SCRATCH/output")" "pr=5"
 has "with a warning" "$out" "::warning title=Permission unknown::The access of member"
 has "and someone else's is ignored" "$out" "Ignored #6 by nobody (NONE, access unreadable)"
 # A stray marker by a bot from a fork or an outsider, whose access the endpoint does not answer, must not block the release.
-answer "$PULLS" "[$(pull 3 NONE 'some-app[bot]' "$MARK" Bot someone/fakepkg), $(pull 1 NONE 'gone-app[bot]' "$MARK" Bot null), $(pull 2 CONTRIBUTOR outsider "$MARK"), $(pull 7 NONE maint "$MARK")]"
+answer "$PULLS" "[$(pull 3 NONE 'some-app[bot]' "$MARK" Bot someone/fakepkg),
+  $(pull 1 NONE 'gone-app[bot]' "$MARK" Bot null), $(pull 2 CONTRIBUTOR outsider "$MARK"), $(pull 7 NONE maint "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
 has "stray marker pull requests by a bot from a fork or an outsider do not block a real run" "$out" "exit 0"
 is "which takes the valid checklist pull request" "$(cat "$SCRATCH/output")" "pr=7"
@@ -78,7 +80,7 @@ has "and the outsider's" "$out" "#2 by outsider (CONTRIBUTOR, access unreadable)
 hasnt "a bot's access is not read" "$(cat "$SCRATCH/gh.log")" "collaborators/some-app[bot]"
 section "find: a checklist pull request opened by an App"
 : >"$SCRATCH/gh.log"
-answer "$PULLS" "[$(pull 4 CONTRIBUTOR stranger "$MARK"), $(pull 11 NONE 'release-app[bot]' "Checklist\n\n$MARK" Bot)]"
+answer "$PULLS" "[$(pull 4 CONTRIBUTOR stranger "$MARK"), $(pull 11 NONE 'release-app[bot]' "$MARK\r\nChecklist" Bot)]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
 has "an App's from a branch of the repository is found on a real run" "$out" "exit 0"
 is "as the checklist pull request" "$(cat "$SCRATCH/output")" "pr=11"
@@ -93,6 +95,15 @@ has "as do two Apps'" "$out" "2 open pull requests (#11 #12)"
 answer "$PULLS" "[$(pull 13 NONE 'not-a-bot[bot]' "$MARK" User)]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
 has "a login ending in [bot] that is no bot account takes the person's path" "$out" "#13 by not-a-bot[bot] (NONE, access unreadable)"
+section "find: where the marker stands, and dependency updates"
+answer "$PULLS" "[$(pull 7 NONE maint "Checklist\n\n$MARK"), $(pull 14 NONE 'dependabot[bot]' "$MARK\n\nBumps x." Bot),
+  $(pull 15 NONE 'renovate[bot]' "$MARK" Bot)]"
+out=$(REQUIRE=true run find fakepkg 1.0.1)
+has "a marker later in the body does not count, even by someone with write access" "$out" \
+  "#7 by maint (the marker is not the body's first line)"
+has "a Dependabot pull request with the marker is ignored" "$out" "#14 by dependabot[bot] (a dependency update)"
+has "as is Renovate's" "$out" "#15 by renovate[bot] (a dependency update)"
+has "so none is the checklist pull request" "$out" "::error title=No single checklist pull request::There is no open pull request"
 section "find: more"
 answer "$PULLS" "[$(pull 4 MEMBER stranger "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
@@ -157,7 +168,8 @@ answer "repos/owner/fakepkg/issues/9/comments?per_page=100" "[]"
 out=$(run attempt 9 fakepkg 1.0.1 "$SHA" "$TSHA" fakepkg_1.0.1.tar.gz)
 has "no comments at all succeed" "$out" "exit 0"
 has "as attempt 1" "$(cat "$SCRATCH/writes")" "### CRAN submission: fakepkg 1.0.1, attempt 1"
-answer "repos/owner/fakepkg/issues/9/comments?per_page=100" "[$(comment 60 'github-actions[bot]' '<!-- release-report: cran-submission -->')]"
+answer "repos/owner/fakepkg/issues/9/comments?per_page=100" \
+  "[$(comment 60 'github-actions[bot]' '<!-- release-report: cran-submission -->')]"
 out=$(run attempt 9 fakepkg 1.0.1 "$SHA" "$TSHA" fakepkg_1.0.1.tar.gz)
 has "nor do comments without an attempt" "$(cat "$SCRATCH/writes")" "### CRAN submission: fakepkg 1.0.1, attempt 1"
 out=$(run attempt 7 fakepkg 1.0.1 "${SHA:0:10}" "$TSHA" fakepkg_1.0.1.tar.gz)
@@ -201,7 +213,8 @@ has "names the remotes" "$s" "with the remotes \`upstream\` (upowner/fakepkg) an
 has "fetches the commit from origin" "$s" "git fetch origin $SHA"
 has "and pushes it to the branch on upstream" "$s" "git push upstream $SHA:refs/heads/release-1.0.1"
 has "copies the draft release to the parent, targeting the commit" "$s" \
-  "gh release create v1.0.1 --repo upowner/fakepkg --draft --target $SHA --title 'fakepkg 1.0.1' --notes-file cran-sync/notes.md cran-sync/fakepkg_1.0.1.tar.gz"
+  "gh release create v1.0.1 --repo upowner/fakepkg --draft --target $SHA --title 'fakepkg 1.0.1' \\
+    --notes-file cran-sync/notes.md cran-sync/fakepkg_1.0.1.tar.gz"
 has "and points the parent's checklist at the fork's" "$s" "attempts are recorded in https://github.example/owner/fakepkg/pull/7."
 has "the log carries the commands too" "$out" "git push upstream $SHA:refs/heads/release-1.0.1"
 is "and nothing is written" "$(cat "$SCRATCH/writes")" ""
@@ -209,6 +222,37 @@ out=$(DRY_RUN=true run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
 has "a dry run's apply after a real run" "$(cat "$SUMMARY")" "after a real run of this submission"
 out=$(run sync fakepkg 1.0.1 "$SHA" 'a..b' 7)
 has "a branch that is no branch name is a usage error" "$out" "exit 2"
+# shellcheck disable=SC2016  # a literal $ in the branch name
+out=$(run sync fakepkg 1.0.1 "$SHA" 'release-$x' 7)
+has "a branch name the shell would expand is quoted" "$(cat "$SUMMARY")" "git push upstream $SHA:refs/heads/release-\\\$x"
+out=$(run sync fakepkg 1.0.1 "$SHA" 'release 1' 7)
+has "a branch name git refuses is a usage error" "$out" "exit 2"
+
+# The printed lookup of the parent's checklist pull request, run against the stub with the parent's pull requests.
+out=$(run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
+sed -n '/^prs=/,/^fi$/p' "$SUMMARY" >"$SCRATCH/lookup.sh"
+# shellcheck disable=SC2016  # expanded by the printed script
+echo 'echo "pr=$prs"' >>"$SCRATCH/lookup.sh"
+UPULLS="repos/upowner/fakepkg/pulls?state=open&per_page=100"
+lookup() { local rc=0; bash -euo pipefail "$SCRATCH/lookup.sh" 2>&1 || rc=$?; echo "exit $rc"; }
+answer "$UPULLS" "[$(pull 21 NONE upmaint "$MARK\nChecklist" User upowner/fakepkg),
+  $(pull 22 NONE upmaint "Notes\n$MARK" User upowner/fakepkg),
+  $(pull 23 NONE 'dependabot[bot]' "$MARK" Bot upowner/fakepkg), $(pull 24 NONE 'some-app[bot]' "$MARK" Bot someone/fakepkg)]"
+out=$(lookup)
+is "the printed lookup takes the one checklist pull request of the parent, filtered as find filters" "$out" "pr=21
+exit 0"
+answer "$UPULLS" "[$(pull 22 NONE upmaint "Notes\n$MARK" User upowner/fakepkg)]"
+out=$(lookup)
+has "and fails without one" "$out" "Expected one checklist pull request in upowner/fakepkg, found: none"
+has "with an error" "$out" "exit 1"
+answer "$UPULLS" "[$(pull 21 NONE upmaint "$MARK" User upowner/fakepkg), $(pull 25 NONE 'release-app[bot]' "$MARK" Bot upowner/fakepkg)]"
+out=$(lookup)
+has "or with two" "$out" "found: 21 25"
+
+answer "repos/owner/fakepkg" '{"fork": true, "parent": null}'
+out=$(run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
+has "a fork whose parent cannot be read fails" "$out" \
+  "::error title=The fork's parent cannot be read::owner/fakepkg is a fork, but its parent reads as ''."
 rm "$API/repos_owner_fakepkg.json"
 out=$(run sync fakepkg 1.0.1 "$SHA" release-1.0.1 7)
 has "an unreadable repository fails with GitHub's error" "$out" \

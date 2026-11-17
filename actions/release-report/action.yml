@@ -7,8 +7,8 @@ description: >
   or records a submission attempt in a new comment (mode `attempt`),
   or, in a fork, prints the commands that bring the parent repository in line by hand (mode `sync`),
   with release-report.sh beside this file.
-  The job needs `pull-requests: read` for `find` and `submitted`, nothing beyond reading the repository for `sync`,
-  and `pull-requests: write` otherwise.
+  The job needs `pull-requests: read` for `find` and `submitted`, only the repository's metadata, which every token can read,
+  for `sync`, and `pull-requests: write` otherwise.
 
 inputs:
   mode:
@@ -51,7 +51,9 @@ inputs:
     description: "`submitted`: `true` lets a version an earlier attempt submitted through"
     default: "false"
   dry-run:
-    description: "`submitted`: `true` only warns about a version an earlier attempt submitted; `sync`: `true` marks the commands as for a real run"
+    description: >-
+      `submitted`: `true` only warns about a version an earlier attempt submitted;
+      `sync`: `true` marks the commands as for a real run
     default: "false"
   tarball-name:
     description: "`attempt`: the tarball's file name"
