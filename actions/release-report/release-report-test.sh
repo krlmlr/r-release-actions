@@ -193,6 +193,20 @@ w=$(cat "$SCRATCH/writes")
 has "a failed upload or an ERROR is a failure" "$w" "### ❌ Builder checks"
 has "naming the upload" "$w" "- win-builder \`R-devel\`: **upload failed**"
 has "and the status" "$w" "**\`Status: 1 ERROR\`**"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=cancelled MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "a win-builder job cancelled after an upload is a failure" "$w" "### ❌ Builder checks"
+has "naming the job and the flavors it did not try" "$w" "- win-builder \`R-devel\`: uploaded; the results arrive by email to the maintainer
+- win-builder: job \`cancelled\`, later flavors not tried"
+out=$(WINBUILDER_RESULTS='R-devel=failed R-release=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+hasnt "a job failed by a failed upload tried every flavor" "$(cat "$SCRATCH/writes")" "later flavors not tried"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=success MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=cancelled run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "a macbuilder job that ends otherwise after its outcome is a failure" "$w" "### ❌ Builder checks"
+has "naming the job" "$w" "- macbuilder \`r-devel\`: \`Status: OK\`, job \`cancelled\`"
 out=$(WINBUILDER_JOB=failure MACBUILDER_JOB=failure run builders 7 fakepkg 1.0.1)
 w=$(cat "$SCRATCH/writes")
 has "jobs that failed before uploading are named" "$w" "- win-builder: no upload, job \`failure\`"

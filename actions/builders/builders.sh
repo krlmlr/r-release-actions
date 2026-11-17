@@ -7,7 +7,7 @@
 #     Upload the tarball by anonymous FTP to `<WINBUILDER_URL>/<flavor>/<file name>` for each flavor,
 #     `R-devel`, `R-release` or `R-oldrelease`, as `devtools:::submit_winbuilder_ftp()` and `upload_ftp()` do
 #     (devtools 2.5.2, R/check-win.R). Win-builder emails the results to the maintainer named in the tarball.
-#     A flavor given twice is uploaded once. Every flavor is tried, each with two retries on a transient error;
+#     A flavor given twice is uploaded once. Every flavor is tried, each with two retries on a failed connection only;
 #     any failed upload fails the stage after the others.
 #     Writes `results`, `<flavor>=<uploaded|failed|dry-run>` separated by spaces, to GITHUB_OUTPUT after each flavor,
 #     so that a job cancelled during a later upload still reports the earlier ones.
@@ -36,6 +36,8 @@
 # Environment:
 #   WINBUILDER_URL             default ftp://win-builder.r-project.org (`devtools:::submit_winbuilder_ftp()`)
 #   MACBUILDER_URL             default https://mac.r-project.org/macbuilder/v1/submit (`devtools:::check_mac()`)
+#   WINBUILDER_MAX_TIME        seconds an upload attempt may take, default 300
+#   WINBUILDER_RETRY_SECONDS   the pause before retrying a failed connection, default 10
 #   MACBUILDER_POLL_SECONDS    default 60
 #   MACBUILDER_TIMEOUT_SECONDS default 3600
 #                              builders-test.sh points the URLs at local servers and shortens the times
@@ -135,12 +137,22 @@ cmd_winbuilder() {
     fi
     group "Win-builder: upload to $f"
     val "url" "$url"
-    rc=0
     # Anonymous FTP upload, as devtools' upload_ftp() does with curl's `upload = TRUE`;
     # at most three attempts of five minutes each, which the workflow's job timeout covers for three flavors.
-    curl --silent --show-error --connect-timeout 30 --max-time 300 --retry 2 --retry-connrefused \
-      --upload-file "$tarball" "$url" \
-      >"$work/ftp.out" 2>"$work/ftp.err" || rc=$?
+    # Only a failed connection (curl's 6 and 7) is retried: after any other error, such as a timeout (28),
+    # part of the file may have arrived, and a retry would send it again under the same name.
+    local attempt
+    for attempt in 1 2 3; do
+      rc=0
+      curl --silent --show-error --connect-timeout 30 --max-time "${WINBUILDER_MAX_TIME:-300}" \
+        --upload-file "$tarball" "$url" >"$work/ftp.out" 2>"$work/ftp.err" || rc=$?
+      case "$rc" in
+        6 | 7) [ "$attempt" -lt 3 ] || break ;;
+        *) break ;;
+      esac
+      say "  attempt $attempt: curl exited with status $rc, no connection: $(head -n 1 "$work/ftp.err"); retrying"
+      sleep "${WINBUILDER_RETRY_SECONDS:-10}"
+    done
     endgroup
     if [ "$rc" -eq 0 ]; then
       say "Uploaded $base to $url"
@@ -246,11 +258,16 @@ cmd_macbuilder() {
 }
 
 # A finished result page's status and classification, separated by a tab; nothing for a page still running.
-# The check log ends in `Status: ...`, `* result classification: ...` and `</pre>`, in that order.
+# The check log ends in `Status: ...`, `* result classification: ...` and `</pre>`, in that order;
+# `</pre>` may end the classification line itself.
 page_result() { # <page>
   awk '
     /^Status: / { st = substr($0, 9); seen = 1; cls = ""; next }
-    seen && /^\* result classification: / { cls = substr($0, 26); next }
+    seen && /^\* result classification: / {
+      cls = substr($0, 26)
+      if (cls ~ /<\/pre>/) { sub(/[ \t]*<\/pre>.*$/, "", cls); print st "\t" cls; exit }
+      next
+    }
     /<\/pre>/ && cls != "" { print st "\t" cls; exit }
     /<\/pre>/ { seen = 0 }' "$1"
 }

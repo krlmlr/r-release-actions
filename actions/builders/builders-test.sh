@@ -31,11 +31,13 @@ CLEANUP+=('[ -z "$FTP_PID" ] || kill "$FTP_PID" 2>/dev/null' '[ -z "$HTTP_PID" ]
 # --- the fake win-builder: an anonymous FTP server ------------------------------
 #
 # Enough of RFC 959 and RFC 2428 for curl's upload: USER, PASS, PWD, CWD, EPSV, PASV, TYPE, STOR, QUIT.
-# Its directories are R-devel, R-release and R-oldrelease; the file `ftp-mode` set to `denied` refuses every STOR.
-# Every stored file is recorded in `ftp-requests` as `STOR /<dir>/<name> sha256=<digest>`.
+# Its directories are R-devel, R-release and R-oldrelease; the file `ftp-mode` set to `denied` refuses every STOR,
+# and set to `stall` answers a STOR only after five seconds.
+# Every STOR is recorded in `ftp-requests` as `STOR-begin /<dir>/<name>`,
+# and every stored file as `STOR /<dir>/<name> sha256=<digest>`.
 
 cat >"$SCRATCH/ftp.py" <<'EOF'
-import hashlib, os, socket, socketserver, sys
+import hashlib, os, socket, socketserver, sys, time
 
 scratch = sys.argv[1]
 DIRS = {"R-devel", "R-release", "R-oldrelease"}
@@ -86,9 +88,12 @@ class Session(socketserver.StreamRequestHandler):
             elif cmd == "TYPE":
                 self.send("200 type set")
             elif cmd == "STOR":
+                record("STOR-begin %s/%s" % (cwd, arg))
                 if mode() == "denied":
                     self.send("553 permission denied")
                     continue
+                if mode() == "stall":
+                    time.sleep(5)
                 self.send("150 ok to send")
                 conn, _ = data.accept()
                 h = hashlib.sha256()
@@ -129,7 +134,7 @@ EOF
 # `ok` 404 first, then a page without a status, then a finished page with `Status: OK`;
 # `note` and `error` a finished page at once; `never` 404 always; `e500` 500 always;
 # `stray` first a running page whose build log holds a `Status:` line, then a finished page with that line too;
-# `crlf` a finished page with CRLF line ends; `odd` a finished page whose status is no status of R CMD check.
+# `crlf` a finished page with CRLF line ends; `inline` a finished page with `</pre>` on the classification line; `odd` a finished page whose status is no status of R CMD check.
 # The finished pages copy the shape of real ones: the check log in a <pre>, ending in `Status:` and the classification.
 
 cat >"$SCRATCH/http.py" <<'EOF'
@@ -194,6 +199,8 @@ class Mac(http.server.BaseHTTPRequestHandler):
             if n == 1:
                 return self.reply(200, "<html><body>%s</pre><pre>* checking examples ...\nStatus: 2 NOTEs\n" % stray)
             return self.reply(200, (FINISHED % ("stray", "OK", "OK, errors:no")).replace("<pre>Resetting rust\n", stray, 1))
+        if job == "inline":
+            return self.reply(200, (FINISHED % ("inline", "1 NOTE", "NOTE, notes:yes")).replace("notes:yes\n</pre>", "notes:yes</pre>"))
         if job == "crlf":
             return self.reply(200, (FINISHED % ("crlf", "OK", "OK, errors:no")).replace("\n", "\r\n"))
         if job == "odd":
@@ -264,7 +271,7 @@ MAC=http://127.0.0.1:$(cat "$SCRATCH/http-port")
 # The local servers are reached directly, never through a proxy.
 export no_proxy=127.0.0.1 NO_PROXY=127.0.0.1
 unset ftp_proxy FTP_PROXY all_proxy ALL_PROXY
-export WINBUILDER_URL=$FTP MACBUILDER_URL=$MAC/macbuilder/v1/submit MACBUILDER_POLL_SECONDS=0 MACBUILDER_TIMEOUT_SECONDS=30
+export WINBUILDER_RETRY_SECONDS=0 WINBUILDER_URL=$FTP MACBUILDER_URL=$MAC/macbuilder/v1/submit MACBUILDER_POLL_SECONDS=0 MACBUILDER_TIMEOUT_SECONDS=30
 
 SUMMARY=$SCRATCH/summary.md
 run() {
@@ -288,7 +295,7 @@ SHA=$(sha256sum "$TARBALL" | cut -d' ' -f1)
 section "winbuilder uploads by anonymous FTP, as devtools' submit_winbuilder_ftp() does"
 out=$(run winbuilder "$TARBALL" R-devel R-release)
 has "it succeeds" "$out" "exit 0"
-is "one STOR per flavor, into the flavor's directory, of the tarball's bytes" "$(cat "$SCRATCH/ftp-requests")" \
+is "one STOR per flavor, into the flavor's directory, of the tarball's bytes" "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests")" \
   "STOR /R-devel/fakepkg_1.0.1.tar.gz sha256=$SHA
 STOR /R-release/fakepkg_1.0.1.tar.gz sha256=$SHA"
 is "the results, written after each flavor" "$(cat "$SCRATCH/output")" "results=R-devel=uploaded
@@ -310,11 +317,18 @@ has "an unknown flavor fails" "$out" "::error title=No win-builder flavor::"
 is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(WINBUILDER_URL=ftp://127.0.0.1:1 run winbuilder "$TARBALL" R-devel)
 has "an unreachable server fails" "$out" "exit 1"
-has "after curl's retries" "$out" "curl exited with status 7"
+has "after two retries of the connection" "$out" "  attempt 2: curl exited with status 7, no connection"
+hasnt "and no third" "$out" "  attempt 3:"
+has "naming curl's status" "$out" "::error title=The upload to win-builder failed::curl exited with status 7"
+echo stall >"$SCRATCH/ftp-mode"
+out=$(WINBUILDER_MAX_TIME=2 run winbuilder "$TARBALL" R-devel)
+has "a timed-out upload fails" "$out" "curl exited with status 28"
+is "without a retry, which could send part of the file again" "$(grep -c '^STOR-begin' "$SCRATCH/ftp-requests")" 1
+echo ok >"$SCRATCH/ftp-mode"
 out=$(run winbuilder "$TARBALL")
 has "no flavor fails, saying so" "$out" "::error title=No win-builder flavor::No flavor was given"
 out=$(run winbuilder "$TARBALL" R-devel R-release R-devel)
-is "a flavor given twice is uploaded once" "$(grep -c STOR "$SCRATCH/ftp-requests")" 2
+is "a flavor given twice is uploaded once" "$(grep -c '^STOR ' "$SCRATCH/ftp-requests")" 2
 is "and reported once" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=uploaded R-release=uploaded"
 cp "$TARBALL" "$SCRATCH/pkg/fakepkg.tar.gz"
 out=$(run winbuilder "$SCRATCH/pkg/fakepkg.tar.gz" R-devel)
@@ -417,6 +431,10 @@ status=OK"
 out=$(run macbuilder-poll "$MAC/macbuilder/results/crlf/")
 is "CRLF line ends are dropped" "$(cat "$SCRATCH/output")" "outcome=ok
 status=OK"
+out=$(run macbuilder-poll "$MAC/macbuilder/results/inline/")
+is "a page whose classification line ends the log is finished" "$(cat "$SCRATCH/output")" "outcome=note
+status=1 NOTE"
+has "with the classification without the tag" "$out" "$(printf '  %-20s %s' classification: 'NOTE, notes:yes')"
 out=$(run macbuilder-poll "$MAC/macbuilder/results/odd/")
 has "a status that is none of R CMD check's is unknown" "$(head -n 1 "$SCRATCH/output")" "outcome=unknown"
 is "without backticks or control characters, at most 200 characters" "$(sed -n 's/^status=//p' "$SCRATCH/output")" \

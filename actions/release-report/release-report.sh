@@ -105,6 +105,17 @@ cmd_builders() {
   if [ -z "$wlines" ]; then
     wlines="- win-builder: no upload, job \`${wjob:-not run}\`"$'\n'
     [ "$wjob" = skipped ] || overall=failure
+  else
+    # A job that ended otherwise than by its own verdict, such as a timeout, may not have tried every flavor;
+    # a failed upload fails the job after all of them.
+    case "$wjob" in
+      success | skipped | '') ;;
+      failure) [[ " ${WINBUILDER_RESULTS:-} " == *=failed\ * ]] || {
+        wlines+="- win-builder: job \`$wjob\`, later flavors not tried"$'\n'
+        overall=failure
+      } ;;
+      *) wlines+="- win-builder: job \`$wjob\`, later flavors not tried"$'\n'; overall=failure ;;
+    esac
   fi
   local murl=${MACBUILDER_URL:-} mstatus
   # The status comes from macbuilder's page: no backticks or control characters reach the comment, and at most 200 characters.
@@ -124,6 +135,13 @@ cmd_builders() {
       fi
       ;;
   esac
+  # An outcome is written when the wait ends; a job that ended otherwise afterwards is named.
+  if [ -n "${MACBUILDER_OUTCOME:-}" ]; then
+    case "$mjob" in
+      success | skipped | '') ;;
+      *) mline+=", job \`$mjob\`"; overall=failure ;;
+    esac
+  fi
   [ -z "$murl" ] || mline+=", [result page]($murl)"
   local icon
   case "$overall" in
