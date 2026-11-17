@@ -207,16 +207,21 @@ What a run does, job by job:
   - `DESCRIPTION` has no `Remotes` field.
   - CRAN's package database, [`packages.rds`](https://cran.r-project.org/web/packages/packages.rds), can be read.
     The next checks use it, and a database that cannot be read fails, because what they check is then unknown.
-  - No dependency in `Depends`, `Imports`, `LinkingTo` or `Suggests` names a source outside CRAN as `Remotes` does,
+  - No dependency in `Depends`, `Imports`, `LinkingTo`, `Suggests` or `Enhances` names a source outside CRAN as `Remotes` does,
     such as `owner/repo` or `github::owner/repo`, or requires a version that CRAN does not have:
     one higher than CRAN's current version for `>=` and `>`, another one for `==`.
     A constraint with four components, such as `Matrix (>= 1.6-1.1)`, passes when CRAN has that version or a later one.
     Base packages such as `stats` pass; recommended packages such as `Matrix` are on CRAN, and are checked as any other.
-    A package that is not on CRAN fails, with two exceptions, both reported in the comment:
-    when `DESCRIPTION` has `biocViews`, such a package is taken to be on Bioconductor, which CRAN installs from;
-    and a package in `Suggests` may come from a repository named in `Additional_repositories`,
-    as [CRAN's policy](https://cran.r-project.org/web/packages/policies.html) allows.
+    A package that is not on CRAN passes, reported in the comment, when Bioconductor's release lists it
+    in its software, annotation data or experiment data index, the `PACKAGES` files under
+    `https://bioconductor.org/packages/release/`, because CRAN installs from Bioconductor too;
+    `biocViews` in `DESCRIPTION` plays no part.
+    A package in `Suggests` or `Enhances` may also come from a repository named in `Additional_repositories`,
+    as [CRAN's policy](https://cran.r-project.org/web/packages/policies.html) allows; it passes, reported.
     The field itself is reported too, for a look at whether each repository is needed and reachable.
+    Any other package that is not on CRAN fails.
+    Bioconductor's indexes that cannot be read are reported once,
+    and a package that is not on CRAN then fails, with that cause in its error.
   - `NEWS.md` has exactly one section for the version, found by its heading `# <package> X.Y.Z` with or without a date,
     outside code fences.
     Without one, the error names the headings that mention the version, such as `## <package> X.Y.Z` or `# <package> vX.Y.Z`.
@@ -237,7 +242,8 @@ What a run does, job by job:
     on the tarball that the check workflow built and checked, taken as the submission takes it.
     Nothing skips the incoming check of the dates.
     Without a green check run holding the tarball, or when taking it fails, this check is reported as not run,
-    and the error of the step that took it, in the run, names the cause.
+    quoting the error of the step that took it, with a link to the job.
+    It is reported as not run, too, when the package's dependencies could not be installed.
 
   A check that cannot run, such as a knit that fails, is reported as not run.
 - **report** updates the release gate's comment on the checklist pull request:

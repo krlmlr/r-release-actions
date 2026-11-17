@@ -141,6 +141,7 @@ jobs:
           check-workflow: ${{ inputs.check-workflow }}
           run-id: ${{ inputs.check-run-id }}
           branch: ${{ github.ref_name }}
+          failure-file: ${{ runner.temp }}/checked-tarball-failure.txt
           token: ${{ github.token }}
 
       - name: Run the reported checks
@@ -150,6 +151,9 @@ jobs:
           mode: report
           tarball: ${{ steps.tarball.outputs.tarball }}
           tarball-outcome: ${{ steps.tarball.outcome }}
+          tarball-failure-file: ${{ runner.temp }}/checked-tarball-failure.txt
+          job-name: Report on what CRAN expects
+          token: ${{ github.token }}
           setup: |
             pandoc=${{ steps.pandoc.outcome }}
             dependencies=${{ steps.dependencies.outcome }}

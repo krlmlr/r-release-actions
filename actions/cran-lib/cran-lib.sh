@@ -6,6 +6,7 @@
 # Sourced, not run. The log folds each stage into a group and annotates outcomes
 # when GITHUB_ACTIONS is true, and prints plain lines otherwise.
 # The report goes to GITHUB_STEP_SUMMARY when that is set, and nowhere otherwise;
+# a failure's title and message also go, as one line, to FAILURE_FILE when that is set, for a later step to quote;
 # the advice on a failure goes to stderr either way.
 # A commit is linked when GITHUB_REPOSITORY is set, with GITHUB_SERVER_URL defaulting to github.com.
 
@@ -75,6 +76,10 @@ failure() {
   fi
   shift
   endgroup
+  if [ -n "${FAILURE_FILE:-}" ]; then
+    printf '%s: %s\n' "$title" "$message" | tr '\n' ' ' | sed 's/ $//' >"$FAILURE_FILE"
+    echo >>"$FAILURE_FILE"
+  fi
   if in_actions; then
     echo "::error title=$(esc_prop "$title")::$(esc_data "$message")"
   else

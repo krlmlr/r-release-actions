@@ -7,11 +7,12 @@
 #     - the version has exactly three components;
 #     - DESCRIPTION has no `Remotes` field;
 #     - CRAN's package database can be read; the next checks use it;
-#     - no dependency in Depends, Imports, LinkingTo or Suggests names a source as `Remotes` does
+#     - no dependency in Depends, Imports, LinkingTo, Suggests or Enhances names a source as `Remotes` does
 #       (`owner/repo`, `github::owner/repo`, `url::...`), or requires a version that CRAN does not have:
 #       higher than CRAN's for `>=` and `>`, another for `==`. Base packages pass; recommended ones are on CRAN.
-#       A package not on CRAN fails, unless DESCRIPTION has `biocViews`, which makes it a Bioconductor package,
-#       or it is in Suggests and DESCRIPTION has `Additional_repositories`, as CRAN's policy allows; both are reported;
+#       A package not on CRAN passes, reported, when Bioconductor's release indexes (BIOC_URL) list it,
+#       or when it is in Suggests or Enhances and DESCRIPTION has `Additional_repositories`, as CRAN's policy allows;
+#       otherwise it fails. Indexes that cannot be read are reported once, and such a package then fails with that cause;
 #     - NEWS.md has exactly one section for the version, found by `# <package> <version>` with the date optional,
 #       outside code fences, whose heading's date is DESCRIPTION's `Date:`, at most 31 days old and at most a day ahead (UTC);
 #       without one, the error names the headings that mention the version;
@@ -33,9 +34,14 @@
 # Environment:
 #   SETUP                `report`: one `<setup step>=<outcome>` per line, as `steps.<id>.outcome` gives it
 #   TARBALL_OUTCOME      `report`: the outcome of the step that takes the checked tarball; empty when there was none
+#   TARBALL_FAILURE_FILE `report`: the file in which that step wrote its failure's title and message, quoted when it failed
+#   JOB_NAME             `report`: this job's name, to link it among the run's jobs (with GH_TOKEN, `actions: read`);
+#                        GH, the gh command, default `gh`, which release-gate-test.sh stubs
 #   TODAY                the date to compare with, YYYY-MM-DD; default today in UTC (the tests set it)
 #   CRAN_DB_URL          CRAN's package database, default https://cran.r-project.org/web/packages/packages.rds;
 #                        release-gate-test.sh points it at a local file
+#   BIOC_URL             Bioconductor's release, default https://bioconductor.org/packages/release, whose
+#                        bioc, data/annotation and data/experiment indexes are read; the tests point it at local files
 #   RSCRIPT, R_CMD       the Rscript and R commands, default `Rscript` and `R`; release-gate-test.sh stubs them
 #   GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, GITHUB_ACTIONS
 #
@@ -65,7 +71,9 @@ d <- if ("Deadline" %in% names(row)) row$Deadline[1] else NA
 cat(if (nrow(row) == 0) "absent" else if (is.na(d) || !nzchar(d)) "none" else d, "\n", sep = "")
 '
 # The dependencies of <tsv> (field, name, operator, version, entry) that CRAN cannot satisfy, as
-# `fail` or `note`, field, entry and reason, tab-separated; <bioc> and <additional> are `yes` or `no`.
+# `fail` or `note`, field, entry and reason, tab-separated.
+# <bioc> holds the names of Bioconductor's packages, one per line, or is empty when its indexes cannot be read,
+# for the reason <bioc cause>; <additional> is `yes` when DESCRIPTION has `Additional_repositories`.
 # shellcheck disable=SC2016  # R code
 r_deps='
 args <- commandArgs(TRUE)
@@ -73,8 +81,9 @@ db <- as.data.frame(readRDS(args[[1]]), stringsAsFactors = FALSE)
 if (!all(c("Package", "Version") %in% names(db))) stop("the database has no Package or Version column")
 deps <- utils::read.delim(args[[2]], header = FALSE, colClasses = "character", quote = "", na.strings = character(),
   col.names = c("field", "name", "op", "ver", "entry"))
-bioc <- args[[3]] == "yes"
-additional <- args[[4]] == "yes"
+bioc <- if (nzchar(args[[3]])) readLines(args[[3]]) else NULL
+bioc_cause <- args[[4]]
+additional <- args[[5]] == "yes"
 base <- c("R", "base", "compiler", "datasets", "graphics", "grDevices", "grid", "methods", "parallel", "splines",
   "stats", "stats4", "tcltk", "tools", "utils")
 say <- function(kind, d, why) cat(kind, "\t", d$field, "\t", d$entry, "\t", why, "\n", sep = "")
@@ -83,9 +92,11 @@ for (i in seq_len(nrow(deps))) {
   if (d$name %in% base) next
   cran <- db$Version[db$Package == d$name]
   if (length(cran) == 0) {
-    if (bioc) say("note", d, "not on CRAN, taken to be on Bioconductor as `biocViews` says")
-    else if (additional && d$field == "Suggests") say("note", d, "not on CRAN, to come from `Additional_repositories`")
-    else say("fail", d, "not on CRAN")
+    if (d$name %in% bioc) say("note", d, "not on CRAN, on Bioconductor")
+    else if (additional && d$field %in% c("Suggests", "Enhances"))
+      say("note", d, "not on CRAN or Bioconductor, to come from `Additional_repositories`")
+    else if (is.null(bioc)) say("fail", d, paste0("not on CRAN, and Bioconductor cannot be checked: ", bioc_cause))
+    else say("fail", d, "not on CRAN or Bioconductor")
     next
   }
   if (!d$op %in% c(">=", ">", "==")) next
@@ -215,10 +226,30 @@ cmd_hard() {
   fi
   endgroup
 
+  group "Bioconductor's package indexes"
+  local bioc_url=${BIOC_URL:-https://bioconductor.org/packages/release} bioc=$out/bioc.names bioc_cause='' repo
+  val "indexes" "$bioc_url"
+  : >"$bioc"
+  for repo in bioc data/annotation data/experiment; do
+    if ! curl --silent --show-error --fail --location --connect-timeout 30 --max-time 120 \
+      --output "$out/PACKAGES" "$bioc_url/$repo/src/contrib/PACKAGES" 2>"$out/curl.err"; then
+      bioc_cause="reading $bioc_url/$repo/src/contrib/PACKAGES failed: $(head -n 1 "$out/curl.err")"
+      break
+    fi
+    sed -n 's/^Package:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$out/PACKAGES" >>"$bioc"
+  done
+  if [ -n "$bioc_cause" ]; then
+    bioc=''
+    note "Bioconductor" "Bioconductor's package indexes cannot be read, so a dependency that is not on CRAN fails: $bioc_cause."
+  else
+    val "packages" "$(wc -l <"$bioc" | tr -d ' ')"
+  fi
+  endgroup
+
   group "Dependencies"
   local field
   : >"$out/deps.remote"
-  for field in Depends Imports LinkingTo Suggests; do
+  for field in Depends Imports LinkingTo Suggests Enhances; do
     dcf_field "$field" "$desc" | tr ',' '\n' | awk -v field="$field" -v remote="$out/deps.remote" '
       { gsub(/^[ \t]+|[ \t]+$/, "") }
       NF == 0 { next }
@@ -237,19 +268,14 @@ cmd_hard() {
         else print field "\t" name "\t" op "\t" ver "\t" $0
       }'
   done >"$out/deps.tsv"
-  local checked="against CRAN's package database"
+  local checked="against CRAN's package database and Bioconductor's indexes" r_failed=''
+  : >"$out/deps.cran"
   if [ -z "$db" ]; then
-    : >"$out/deps.cran"
     checked="for sources outside CRAN only, as CRAN's package database cannot be read"
-  elif [ ! -s "$out/deps.tsv" ]; then
+  elif [ -s "$out/deps.tsv" ] && ! "$rscript" --vanilla -e "$r_deps" "$db" "$out/deps.tsv" "$bioc" "$bioc_cause" \
+    "$(has_field Additional_repositories "$desc")" >"$out/deps.cran" 2>"$out/r.err"; then
     : >"$out/deps.cran"
-  elif ! "$rscript" --vanilla -e "$r_deps" "$db" "$out/deps.tsv" \
-    "$(has_field biocViews "$desc")" "$(has_field Additional_repositories "$desc")" >"$out/deps.cran" 2>"$out/r.err"; then
-    : >"$out/deps.cran"
-    checked="for sources outside CRAN only"
-    flunk "Dependencies" "The dependencies cannot be checked against CRAN" \
-      "Reading CRAN's package database with R failed: $(tail -n 1 "$out/r.err")." "$out/r.err" -- \
-      "Run the gate again; if it fails again, the database's format has changed, and this check needs to follow."
+    r_failed="Reading CRAN's package database with R failed: $(tail -n 1 "$out/r.err")."
   fi
   # The failures: sources outside CRAN, and versions CRAN does not have.
   {
@@ -258,13 +284,21 @@ cmd_hard() {
   } >"$out/deps"
   awk -F '\t' '$1 == "note" { print $2 ": `" $3 "`, " $4 }' "$out/deps.cran" >"$out/deps.notes"
   cat "$out/deps" "$out/deps.notes"
-  if [ -s "$out/deps" ]; then
+  local listed=''
+  [ ! -s "$out/deps" ] || listed="$(paste -s -d ';' "$out/deps" | sed 's/;/; /g'). "
+  if [ -n "$r_failed" ]; then
+    # One failure, which names both causes.
+    cat "$out/r.err" >>"$out/deps"
+    flunk "Dependencies" "The dependencies cannot be checked against CRAN" \
+      "$listed$r_failed" "$out/deps" -- \
+      "Run the gate again; if it fails again, the database's format has changed, and this check needs to follow."
+  elif [ -n "$listed" ]; then
     flunk "Dependencies" "A dependency is not on CRAN" \
-      "$(paste -s -d ';' "$out/deps" | sed 's/;/; /g'). CRAN installs dependencies only from CRAN, in its current versions." \
+      "${listed}CRAN installs dependencies only from CRAN and Bioconductor, in their current versions." \
       "$out/deps" -- \
       "Require versions of the dependencies that CRAN has, and wait for any that is not on CRAN yet."
-  elif [ "$checked" != "for sources outside CRAN only" ]; then
-    pass "Dependencies" "Depends, Imports, LinkingTo and Suggests need nothing outside CRAN, checked $checked."
+  else
+    pass "Dependencies" "Depends, Imports, LinkingTo, Suggests and Enhances need nothing outside CRAN, checked $checked."
   fi
   if [ -s "$out/deps.notes" ]; then
     note "Dependencies" "$(paste -s -d ';' "$out/deps.notes" | sed 's/;/; /g')."
@@ -374,6 +408,18 @@ and the date in parentheses, each after one space."
   notice "Release gate" "$pkg $version passes every hard check."
 }
 
+# The URL of this job, found among the run's jobs by JOB_NAME, which a reusable workflow's caller prefixes;
+# the run's URL when the job cannot be found or the jobs cannot be read.
+this_job_url() {
+  local run="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-0}" url=''
+  if [ -n "${JOB_NAME:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+    url=$("${GH:-gh}" api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/${GITHUB_RUN_ATTEMPT:-1}/jobs?per_page=100" \
+      --jq "[.jobs[] | select(.name == \"$JOB_NAME\" or (.name | endswith(\" / $JOB_NAME\")))][0].html_url // \"\"" 2>/dev/null) ||
+      url=''
+  fi
+  printf '%s' "${url:-$run}"
+}
+
 # --- report ---------------------------------------------------------------
 
 cmd_report() {
@@ -403,14 +449,16 @@ cmd_report() {
   }
 
   summary "## Release gate: reported, not enforced" ""
-  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-0}"
+  local job_url deps_failed=false
+  job_url=$(this_job_url)
 
   # A setup step that failed: the checks that need what it installs report themselves as not run.
   local step outcome
   while IFS='=' read -r step outcome; do
     [ -n "$step" ] || continue
     [ "$outcome" != success ] || continue
-    unrun "Setup: $step" "the job's step that sets up \`$step\` ended with \`$outcome\`; its error in $run_url names the cause, \
+    [ "$step" != dependencies ] || deps_failed=true
+    unrun "Setup: $step" "the job's step that sets up \`$step\` ended with \`$outcome\`; its error in $job_url names the cause, \
 and the checks below that need it cannot run."
   done <<<"${SETUP:-}"
 
@@ -487,16 +535,18 @@ and the checks below that need it cannot run."
 
   group "R CMD check --as-cran"
   local name status
-  case "${TARBALL_OUTCOME:-success}" in
-    success) ;;
-    failure)
-      unrun "R CMD check" "taking the checked tarball failed. The step's error in $run_url names the cause: \
-no green push or dispatch run of the check workflow on this commit holds the tarball, the commit is not the branch's head, \
-the token cannot read the runs, or the tarball's digest or contents do not match." ;;
-    *) unrun "R CMD check" "the step that takes the checked tarball ended with \`$TARBALL_OUTCOME\`." ;;
-  esac
-  if [ "${TARBALL_OUTCOME:-success}" != success ]; then
-    :
+  local cause=''
+  if [ -n "${TARBALL_FAILURE_FILE:-}" ] && [ -s "$TARBALL_FAILURE_FILE" ]; then
+    cause=$(head -n 1 "$TARBALL_FAILURE_FILE")
+  fi
+  if [ "${TARBALL_OUTCOME:-success}" = failure ] && [ -n "$cause" ]; then
+    unrun "R CMD check" "taking the checked tarball failed: $cause (see $job_url)."
+  elif [ "${TARBALL_OUTCOME:-success}" = failure ]; then
+    unrun "R CMD check" "taking the checked tarball failed, and its step wrote no cause; its error in $job_url names it."
+  elif [ "${TARBALL_OUTCOME:-success}" != success ]; then
+    unrun "R CMD check" "the step that takes the checked tarball ended with \`$TARBALL_OUTCOME\`."
+  elif [ "$deps_failed" = true ]; then
+    unrun "R CMD check" "the package's dependencies could not be installed, so its check would fail on them."
   elif [ -z "$tarball" ]; then
     unrun "R CMD check" "no checked tarball of this commit, from a green run of the check workflow."
   elif [ ! -f "$tarball" ]; then

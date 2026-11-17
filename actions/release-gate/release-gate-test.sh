@@ -5,8 +5,9 @@
 #
 #   1. `hard` passes a release that meets every requirement, and reports each check.
 #   2. `hard` fails, each with its own error, on a development version, `Remotes`, a dependency on a source outside CRAN
-#      or on a version CRAN does not have (four components CRAN has pass; base packages pass; Bioconductor and
-#      Additional_repositories are reported), a missing, doubled, undated, mismatched, stale or future NEWS.md section,
+#      or on a version CRAN does not have (four components CRAN has pass; base packages pass; Bioconductor's packages,
+#      read from local indexes, and Additional_repositories are reported, and unreadable indexes too),
+#      a missing, doubled, undated, mismatched, stale or future NEWS.md section,
 #      naming near-miss headings and ignoring code fences, a deadline in CRAN's package database,
 #      and a database that cannot be read; one failure does not hide another.
 #   3. `report` never fails, and reports a failed setup step, a checked tarball that could not be taken,
@@ -46,6 +47,14 @@ db() { # <fakepkg's deadline, or empty, or `absent`>
 }
 db ""
 export CRAN_DB_URL=file://$DB
+
+# Bioconductor's release indexes: software, annotation and experiment data, one package each.
+BIOC=$SCRATCH/bioc
+for r in bioc:limma data/annotation:org.Hs.eg.db data/experiment:airway; do
+  mkdir -p "$BIOC/${r%%:*}/src/contrib"
+  printf 'Package: %s\nVersion: 1.0.0\n\nPackage: BiocOther\nVersion: 2.0.0\n' "${r#*:}" >"$BIOC/${r%%:*}/src/contrib/PACKAGES"
+done
+export BIOC_URL=file://$BIOC
 
 # Rscript answers urlchecker, spelling and the README's knit from $STUB, and runs anything else, the database read included.
 REAL_RSCRIPT=$(command -v Rscript)
@@ -163,7 +172,8 @@ deps 'Matrix (>= 1.6-1.1), RcppArmadillo (>= 0.12.6.6.0), cli (== 3.6.5), stats,
 out=$(hard)
 has "four components that CRAN has pass, as do an exact version and base packages" "$out" "exit 0"
 has "and the report says what they are checked against" "$(cat "$SCRATCH/output")" \
-  "- ✅ **Dependencies:** Depends, Imports, LinkingTo and Suggests need nothing outside CRAN, checked against CRAN's package database."
+  "- ✅ **Dependencies:** Depends, Imports, LinkingTo, Suggests and Enhances need nothing outside CRAN, \
+checked against CRAN's package database and Bioconductor's indexes."
 deps 'BH' 'LinkingTo: cpp11 (>= 0.5.2.9000), BH (>= 1.87.0-1)'
 out=$(hard)
 has "a version CRAN does not have yet fails" "$out" \
@@ -176,26 +186,41 @@ has "== needs CRAN's" "$out" "Imports: \`rlang (== 1.1.5)\`, CRAN has 1.1.6"
 hasnt "< is not checked" "$out" "Matrix"
 deps 'cli (>= x.y)'
 has "a version that is no version fails" "$(hard)" "Imports: \`cli (>= x.y)\`, no valid version"
-deps 'notoncran'
-has "a package not on CRAN fails" "$(hard)" "::error title=A dependency is not on CRAN::Imports: \`notoncran\`, not on CRAN."
-deps 'notoncran' 'biocViews: Software'
+deps 'notapkg'
+has "a package in neither CRAN nor Bioconductor fails" "$(hard)" \
+  "::error title=A dependency is not on CRAN::Imports: \`notapkg\`, not on CRAN or Bioconductor."
+deps 'notapkg' 'biocViews:'
+has "whatever biocViews says" "$(hard)" "Imports: \`notapkg\`, not on CRAN or Bioconductor."
+deps 'limma' 'Suggests: org.Hs.eg.db, airway'
 out=$(hard)
-has "unless biocViews makes it a Bioconductor package" "$out" "exit 0"
-has "which is reported" "$(cat "$SCRATCH/output")" \
-  "- ⚠️ **Dependencies:** Imports: \`notoncran\`, not on CRAN, taken to be on Bioconductor as \`biocViews\` says."
+has "a Bioconductor package passes, without biocViews" "$out" "exit 0"
+has "from each of Bioconductor's indexes, and is reported" "$(cat "$SCRATCH/output")" \
+  "- ⚠️ **Dependencies:** Imports: \`limma\`, not on CRAN, on Bioconductor; Suggests: \`org.Hs.eg.db\`, not on CRAN, on Bioconductor; \
+Suggests: \`airway\`, not on CRAN, on Bioconductor."
+out=$(BIOC_URL=file://$SCRATCH/nobioc hard)
+has "indexes that cannot be read are reported once" "$out" \
+  "::warning title=Bioconductor::Bioconductor's package indexes cannot be read, so a dependency that is not on CRAN fails: \
+reading file://$SCRATCH/nobioc/bioc/src/contrib/PACKAGES failed"
+is "once" "$(grep -c '^::warning title=Bioconductor::' <<<"$out")" 1
+has "and a Bioconductor package then fails with that cause" "$out" \
+  "Imports: \`limma\`, not on CRAN, and Bioconductor cannot be checked: reading file://$SCRATCH/nobioc/bioc/src/contrib/PACKAGES failed"
 deps 'cli' 'Suggests: testthat (>= 3.3.0.9000), elsewhere'
 out=$(hard)
-has "Suggests is checked as well" "$out" "Suggests: \`testthat (>= 3.3.0.9000)\`, CRAN has 3.3.0; Suggests: \`elsewhere\`, not on CRAN."
-deps 'cli' 'Suggests: elsewhere' 'Additional_repositories: https://example.org/repo'
+has "Suggests is checked as well" "$out" \
+  "Suggests: \`testthat (>= 3.3.0.9000)\`, CRAN has 3.3.0; Suggests: \`elsewhere\`, not on CRAN or Bioconductor."
+deps 'cli' 'Enhances: elsewhere'
+has "and Enhances" "$(hard)" "Enhances: \`elsewhere\`, not on CRAN or Bioconductor."
+deps 'cli' 'Suggests: elsewhere' 'Enhances: another' 'Additional_repositories: https://example.org/repo'
 out=$(hard)
-has "a suggested package from Additional_repositories passes" "$out" "exit 0"
+has "a suggested or enhanced package from Additional_repositories passes" "$out" "exit 0"
 o=$(cat "$SCRATCH/output")
-has "and is reported" "$o" "- ⚠️ **Dependencies:** Suggests: \`elsewhere\`, not on CRAN, to come from \`Additional_repositories\`."
+has "and is reported" "$o" "Suggests: \`elsewhere\`, not on CRAN or Bioconductor, to come from \`Additional_repositories\`"
+has "both" "$o" "Enhances: \`another\`, not on CRAN or Bioconductor, to come from \`Additional_repositories\`"
 has "as is the field itself" "$o" \
   "- ⚠️ **Additional repositories:** \`Additional_repositories: https://example.org/repo\`: CRAN accepts it"
 has "with a warning in the run" "$out" "::warning title=Additional repositories::"
 deps 'elsewhere' 'Additional_repositories: https://example.org/repo'
-has "an import from Additional_repositories still fails" "$(hard)" "Imports: \`elsewhere\`, not on CRAN."
+has "an import from Additional_repositories still fails" "$(hard)" "Imports: \`elsewhere\`, not on CRAN or Bioconductor."
 deps 'github::r-lib/rlang, owner/pkg@v1'
 out=$(hard)
 has "a source outside CRAN fails" "$out" \
@@ -256,6 +281,13 @@ has "and one that R cannot read" "$out" \
   "::error title=CRAN's package database cannot be read::Reading the downloaded database with R failed"
 has "which the dependencies report too" "$out" \
   "::error title=The dependencies cannot be checked against CRAN::Reading CRAN's package database with R failed"
+deps 'owner/pkg'
+out=$(CRAN_DB_URL=file://$SCRATCH/bad.rds hard)
+is "with a source outside CRAN as well, the dependencies fail once" \
+  "$(grep -c '^::error title=.*dependencies\|^::error title=A dependency' <<<"$out")" 1
+has "naming both causes" "$out" \
+  "::error title=The dependencies cannot be checked against CRAN::Imports: \`owner/pkg\`, a source outside CRAN. \
+Reading CRAN's package database"
 
 section "hard: one failure does not hide another"
 db 2026-12-01
@@ -398,17 +430,37 @@ has "no tarball skips R CMD check" "$o" "- ⏭️ **R CMD check:** not run: no c
 has "with a warning in the run" "$out" "::warning title=R CMD check not run::"
 out=$(run report "$PKG" "$SCRATCH/out" "$SCRATCH/none_1.0.1.tar.gz")
 has "a missing tarball is not run" "$(cat "$SCRATCH/output")" "not run: the tarball"
-out=$(SETUP=$'pandoc=success\ndependencies=failure' TARBALL_OUTCOME=failure GITHUB_SERVER_URL=https://github.example \
-  GITHUB_REPOSITORY=owner/fakepkg GITHUB_RUN_ID=99 run report "$PKG" "$SCRATCH/out")
+RUN_ENV=(GITHUB_SERVER_URL=https://github.example GITHUB_REPOSITORY=owner/fakepkg GITHUB_RUN_ID=99 GITHUB_RUN_ATTEMPT=2)
+out=$(export "${RUN_ENV[@]}"; SETUP=$'pandoc=success\ndependencies=failure' TARBALL_OUTCOME=failure \
+  run report "$PKG" "$SCRATCH/out")
 o=$(cat "$SCRATCH/output")
 has "naming the step and pointing at its error" "$o" \
   "- ⏭️ **Setup: dependencies:** not run: the job's step that sets up \`dependencies\` ended with \`failure\`; \
 its error in https://github.example/owner/fakepkg/actions/runs/99 names the cause"
 hasnt "a successful one is not" "$o" "Setup: pandoc"
-has "a failed tarball step is not reported as a missing tarball" "$o" \
-  "- ⏭️ **R CMD check:** not run: taking the checked tarball failed. \
-The step's error in https://github.example/owner/fakepkg/actions/runs/99 names the cause"
+has "a failed tarball step without a cause is not reported as a missing tarball" "$o" \
+  "- ⏭️ **R CMD check:** not run: taking the checked tarball failed, and its step wrote no cause; \
+its error in https://github.example/owner/fakepkg/actions/runs/99 names it."
 hasnt "which it is not" "$o" "no checked tarball of this commit"
+# The step's failure, written by cran-lib's `fail` with FAILURE_FILE, and this job among the run's jobs.
+FAILURE_FILE=$SCRATCH/tarball-failure bash -c '. "$1/../cran-lib/cran-lib.sh"; fail "Tarball" "The check run is not green" \
+  "Run 7 of R-CMD-check.yaml concluded failure." -- "Fix it."' _ "$HERE" >/dev/null 2>&1 || :
+gh_stub
+answer "repos/owner/fakepkg/actions/runs/99/attempts/2/jobs?per_page=100" '{"jobs": [
+  {"name": "gate / Enforce what CRAN requires", "html_url": "https://github.example/owner/fakepkg/actions/runs/99/job/1"},
+  {"name": "gate / Report on what CRAN expects", "html_url": "https://github.example/owner/fakepkg/actions/runs/99/job/2"}]}'
+out=$(export "${RUN_ENV[@]}"; SETUP='dependencies=success' TARBALL_OUTCOME=failure TARBALL_FAILURE_FILE=$SCRATCH/tarball-failure \
+  JOB_NAME='Report on what CRAN expects' run report "$PKG" "$SCRATCH/out" "$SCRATCH/fakepkg_1.0.1.tar.gz")
+has "the step's failure is quoted, linking this job" "$(cat "$SCRATCH/output")" \
+  "- ⏭️ **R CMD check:** not run: taking the checked tarball failed: The check run is not green: \
+Run 7 of R-CMD-check.yaml concluded failure. (see https://github.example/owner/fakepkg/actions/runs/99/job/2)."
+out=$(export "${RUN_ENV[@]}"; SETUP='dependencies=failure' TARBALL_OUTCOME=success \
+  run report "$PKG" "$SCRATCH/out" "$SCRATCH/fakepkg_1.0.1.tar.gz")
+has "without the dependencies, R CMD check is not run" "$(cat "$SCRATCH/output")" \
+  "- ⏭️ **R CMD check:** not run: the package's dependencies could not be installed, so its check would fail on them."
+out=$(export "${RUN_ENV[@]}"; JOB_NAME='Another job' SETUP='pandoc=failure' run report "$PKG" "$SCRATCH/out")
+has "a job that cannot be found links the run" "$(cat "$SCRATCH/output")" \
+  "its error in https://github.example/owner/fakepkg/actions/runs/99 names the cause"
 out=$(TARBALL_OUTCOME=skipped run report "$PKG" "$SCRATCH/out")
 has "nor a skipped one" "$(cat "$SCRATCH/output")" "the step that takes the checked tarball ended with \`skipped\`."
 rm "$STUB/00check.log"

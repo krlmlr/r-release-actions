@@ -21,6 +21,15 @@ inputs:
   tarball-outcome:
     description: "`report`: the outcome of the step that took the checked tarball, reported unless `success`; empty when there was none"
     default: ""
+  tarball-failure-file:
+    description: "`report`: the file in which the step that takes the tarball wrote its failure, quoted when that step failed"
+    default: ""
+  job-name:
+    description: "`report`: this job's name, to link the job rather than the run; needs `token`"
+    default: ""
+  token:
+    description: "`report`: a token with `actions: read`, to find this job among the run's jobs; empty links the run"
+    default: ""
   setup:
     description: "`report`: one `<setup step>=<outcome>` per line; each that is not `success` is reported with the checks"
     default: ""
@@ -50,6 +59,9 @@ runs:
         TARBALL: ${{ inputs.tarball }}
         TARBALL_OUTCOME: ${{ inputs.tarball-outcome }}
         SETUP: ${{ inputs.setup }}
+        TARBALL_FAILURE_FILE: ${{ inputs.tarball-failure-file }}
+        JOB_NAME: ${{ inputs.job-name }}
+        GH_TOKEN: ${{ inputs.token }}
       run: |
         script="$GITHUB_ACTION_PATH/release-gate.sh"
         status=0
