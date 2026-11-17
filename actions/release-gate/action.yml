@@ -10,7 +10,7 @@ description: >
 
 inputs:
   mode:
-    description: "`hard` or `report`"
+    description: "`hard`, `report` or `job-url`"
     required: true
   path:
     description: "The package's checkout"
@@ -25,10 +25,14 @@ inputs:
     description: "`report`: the file in which the step that takes the tarball wrote its failure, quoted when that step failed"
     default: ""
   job-name:
-    description: "`report`: this job's name, to link the job rather than the run; needs `token`"
+    description: >-
+      `job-url`: the job's `name:`, which must match it; a mismatch links the run instead
     default: ""
   token:
-    description: "`report`: a token with `actions: read`, to find this job among the run's jobs; empty links the run"
+    description: "`job-url`: a token with `actions: read`, to find the job among the run's jobs; `report` takes none"
+    default: ""
+  job-url:
+    description: "`report`: the job to link, from mode `job-url`; empty links the run"
     default: ""
   setup:
     description: "`report`: one `<setup step>=<outcome>` per line; each that is not `success` is reported with the checks"
@@ -47,12 +51,26 @@ outputs:
   report:
     description: "The checks' results, as Markdown"
     value: ${{ steps.run.outputs.report }}
+  job-url:
+    description: "`job-url`: the job's URL, or the run's"
+    value: ${{ steps.job.outputs.job-url }}
 
 runs:
   using: "composite"
   steps:
+    # The only step that holds the token, run before the package's code, which `report` runs without one.
+    - id: job
+      if: inputs.mode == 'job-url'
+      env:
+        JOB_NAME: ${{ inputs.job-name }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        "$GITHUB_ACTION_PATH/release-gate.sh" job-url
+      shell: bash
+
     # The status is kept, not dropped, so that the outputs reach the job even when a hard check fails; the next step fails then.
     - id: run
+      if: inputs.mode != 'job-url'
       env:
         MODE: ${{ inputs.mode }}
         PKG_PATH: ${{ inputs.path }}
@@ -60,8 +78,7 @@ runs:
         TARBALL_OUTCOME: ${{ inputs.tarball-outcome }}
         SETUP: ${{ inputs.setup }}
         TARBALL_FAILURE_FILE: ${{ inputs.tarball-failure-file }}
-        JOB_NAME: ${{ inputs.job-name }}
-        GH_TOKEN: ${{ inputs.token }}
+        JOB_URL: ${{ inputs.job-url }}
       run: |
         script="$GITHUB_ACTION_PATH/release-gate.sh"
         status=0
@@ -73,7 +90,7 @@ runs:
         echo "status=$status" >>"$GITHUB_OUTPUT"
       shell: bash
 
-    - if: steps.run.outputs.status != '0'
+    - if: inputs.mode != 'job-url' && steps.run.outputs.status != '0'
       env:
         STATUS: ${{ steps.run.outputs.status }}
       run: |

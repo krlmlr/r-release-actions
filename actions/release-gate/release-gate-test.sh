@@ -13,7 +13,8 @@
 #   3. `report` never fails, and reports a failed setup step, a checked tarball that could not be taken,
 #      help pages without `\value`, a stale or differently knitted README, URLs, spelling, and the problems of
 #      `R CMD check`, run with CRAN's incoming checks on the tarball; a check that cannot run is reported as not run,
-#      and a long report is cut to fit an environment variable.
+#      and a long report is cut to fit an environment variable; it reads nothing from GitHub.
+#   4. `job-url` finds the job among the run's jobs, and falls back to the run with a notice.
 #
 # Usage:
 #   actions/release-gate/release-gate-test.sh
@@ -197,6 +198,12 @@ has "a Bioconductor package passes, without biocViews" "$out" "exit 0"
 has "from each of Bioconductor's indexes, and is reported" "$(cat "$SCRATCH/output")" \
   "- ⚠️ **Dependencies:** Imports: \`limma\`, not on CRAN, on Bioconductor; Suggests: \`org.Hs.eg.db\`, not on CRAN, on Bioconductor; \
 Suggests: \`airway\`, not on CRAN, on Bioconductor."
+deps 'limma (>= 1.0.0)' 'Suggests: airway (>= 99.0)'
+out=$(hard)
+has "a Bioconductor package's constraint is checked against Bioconductor's version" "$out" \
+  "::error title=A dependency is not on CRAN::Suggests: \`airway (>= 99.0)\`, Bioconductor has 1.0.0."
+hasnt "one that Bioconductor meets passes" "$out" "limma (>= 1.0.0)\`, Bioconductor has"
+deps 'limma'
 out=$(BIOC_URL=file://$SCRATCH/nobioc hard)
 has "indexes that cannot be read are reported once" "$out" \
   "::warning title=Bioconductor::Bioconductor's package indexes cannot be read, so a dependency that is not on CRAN fails: \
@@ -449,17 +456,29 @@ gh_stub
 answer "repos/owner/fakepkg/actions/runs/99/attempts/2/jobs?per_page=100" '{"jobs": [
   {"name": "gate / Enforce what CRAN requires", "html_url": "https://github.example/owner/fakepkg/actions/runs/99/job/1"},
   {"name": "gate / Report on what CRAN expects", "html_url": "https://github.example/owner/fakepkg/actions/runs/99/job/2"}]}'
+out=$(export "${RUN_ENV[@]}"; JOB_NAME='Report on what CRAN expects' run job-url)
+has "job-url finds the job under the caller's prefix" "$out" "exit 0"
+is "and writes its URL" "$(cat "$SCRATCH/output")" "job-url=https://github.example/owner/fakepkg/actions/runs/99/job/2"
+out=$(export "${RUN_ENV[@]}"; JOB_NAME='Another job' run job-url)
+is "a name that matches no job links the run" "$(cat "$SCRATCH/output")" "job-url=https://github.example/owner/fakepkg/actions/runs/99"
+has "with a notice" "$out" "::notice title=Job URL::No job of the run is named 'Another job'; the report links the run."
+out=$(export "${RUN_ENV[@]}" GITHUB_RUN_ATTEMPT=3; JOB_NAME='Report on what CRAN expects' run job-url)
+is "jobs that cannot be read link the run" "$(cat "$SCRATCH/output")" "job-url=https://github.example/owner/fakepkg/actions/runs/99"
+has "with GitHub's error in a notice" "$out" "::notice title=Job URL::The run's jobs cannot be read (gh: Not Found (HTTP 404))"
+: >"$SCRATCH/gh.log"
 out=$(export "${RUN_ENV[@]}"; SETUP='dependencies=success' TARBALL_OUTCOME=failure TARBALL_FAILURE_FILE=$SCRATCH/tarball-failure \
-  JOB_NAME='Report on what CRAN expects' run report "$PKG" "$SCRATCH/out" "$SCRATCH/fakepkg_1.0.1.tar.gz")
-has "the step's failure is quoted, linking this job" "$(cat "$SCRATCH/output")" \
+  JOB_URL=https://github.example/owner/fakepkg/actions/runs/99/job/2 GH_TOKEN=secret \
+  run report "$PKG" "$SCRATCH/out" "$SCRATCH/fakepkg_1.0.1.tar.gz")
+has "the step's failure is quoted, linking the job given" "$(cat "$SCRATCH/output")" \
   "- ⏭️ **R CMD check:** not run: taking the checked tarball failed: The check run is not green: \
 Run 7 of R-CMD-check.yaml concluded failure. (see https://github.example/owner/fakepkg/actions/runs/99/job/2)."
+is "report reads nothing from GitHub" "$(cat "$SCRATCH/gh.log")" ""
 out=$(export "${RUN_ENV[@]}"; SETUP='dependencies=failure' TARBALL_OUTCOME=success \
   run report "$PKG" "$SCRATCH/out" "$SCRATCH/fakepkg_1.0.1.tar.gz")
 has "without the dependencies, R CMD check is not run" "$(cat "$SCRATCH/output")" \
   "- ⏭️ **R CMD check:** not run: the package's dependencies could not be installed, so its check would fail on them."
-out=$(export "${RUN_ENV[@]}"; JOB_NAME='Another job' SETUP='pandoc=failure' run report "$PKG" "$SCRATCH/out")
-has "a job that cannot be found links the run" "$(cat "$SCRATCH/output")" \
+out=$(export "${RUN_ENV[@]}"; SETUP='pandoc=failure' run report "$PKG" "$SCRATCH/out")
+has "without a job's URL, report links the run" "$(cat "$SCRATCH/output")" \
   "its error in https://github.example/owner/fakepkg/actions/runs/99 names the cause"
 out=$(TARBALL_OUTCOME=skipped run report "$PKG" "$SCRATCH/out")
 has "nor a skipped one" "$(cat "$SCRATCH/output")" "the step that takes the checked tarball ended with \`skipped\`."

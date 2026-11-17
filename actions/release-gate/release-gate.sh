@@ -26,16 +26,23 @@
 #     URLs that urlchecker flags, words that spelling flags, and, with a tarball,
 #     `R CMD check --as-cran --no-manual` on it with CRAN's incoming checks.
 #     A check that cannot run is reported as such. Writes `report`, Markdown, to GITHUB_OUTPUT.
+#     It holds no token: the package's own code runs here.
+#   job-url
+#     Writes `job-url`, the URL of the job named JOB_NAME among the run's jobs, which a reusable workflow's caller
+#     prefixes with its own job's name, to GITHUB_OUTPUT; the run's URL when the job cannot be found or the jobs cannot be read.
+#     It runs before the package's code, as the only step that holds the token.
 #
 # Usage:
 #   release-gate.sh hard <package dir> <out dir>
 #   release-gate.sh report <package dir> <out dir> [<tarball>]
+#   release-gate.sh job-url
 #
 # Environment:
 #   SETUP                `report`: one `<setup step>=<outcome>` per line, as `steps.<id>.outcome` gives it
 #   TARBALL_OUTCOME      `report`: the outcome of the step that takes the checked tarball; empty when there was none
 #   TARBALL_FAILURE_FILE `report`: the file in which that step wrote its failure's title and message, quoted when it failed
-#   JOB_NAME             `report`: this job's name, to link it among the run's jobs (with GH_TOKEN, `actions: read`);
+#   JOB_URL              `report`: the job to link, from `job-url`; default the run's URL
+#   JOB_NAME             `job-url`: the job's name; GH_TOKEN with `actions: read` reads the run's jobs;
 #                        GH, the gh command, default `gh`, which release-gate-test.sh stubs
 #   TODAY                the date to compare with, YYYY-MM-DD; default today in UTC (the tests set it)
 #   CRAN_DB_URL          CRAN's package database, default https://cran.r-project.org/web/packages/packages.rds;
@@ -72,7 +79,7 @@ cat(if (nrow(row) == 0) "absent" else if (is.na(d) || !nzchar(d)) "none" else d,
 '
 # The dependencies of <tsv> (field, name, operator, version, entry) that CRAN cannot satisfy, as
 # `fail` or `note`, field, entry and reason, tab-separated.
-# <bioc> holds the names of Bioconductor's packages, one per line, or is empty when its indexes cannot be read,
+# <bioc> holds Bioconductor's packages, one `<name>\t<version>` per line, or is empty when its indexes cannot be read,
 # for the reason <bioc cause>; <additional> is `yes` when DESCRIPTION has `Additional_repositories`.
 # shellcheck disable=SC2016  # R code
 r_deps='
@@ -81,7 +88,9 @@ db <- as.data.frame(readRDS(args[[1]]), stringsAsFactors = FALSE)
 if (!all(c("Package", "Version") %in% names(db))) stop("the database has no Package or Version column")
 deps <- utils::read.delim(args[[2]], header = FALSE, colClasses = "character", quote = "", na.strings = character(),
   col.names = c("field", "name", "op", "ver", "entry"))
-bioc <- if (nzchar(args[[3]])) readLines(args[[3]]) else NULL
+bioc <- if (!nzchar(args[[3]])) NULL else if (file.size(args[[3]]) == 0) data.frame(Package = character(), Version = character()) else
+  utils::read.delim(args[[3]], header = FALSE, colClasses = "character", quote = "", na.strings = character(),
+    col.names = c("Package", "Version"))
 bioc_cause <- args[[4]]
 additional <- args[[5]] == "yes"
 base <- c("R", "base", "compiler", "datasets", "graphics", "grDevices", "grid", "methods", "parallel", "splines",
@@ -91,9 +100,14 @@ for (i in seq_len(nrow(deps))) {
   d <- deps[i, ]
   if (d$name %in% base) next
   cran <- db$Version[db$Package == d$name]
+  repo <- "CRAN"
+  if (length(cran) == 0 && !is.null(bioc) && d$name %in% bioc$Package) {
+    cran <- bioc$Version[bioc$Package == d$name]
+    repo <- "Bioconductor"
+    say("note", d, "not on CRAN, on Bioconductor")
+  }
   if (length(cran) == 0) {
-    if (d$name %in% bioc) say("note", d, "not on CRAN, on Bioconductor")
-    else if (additional && d$field %in% c("Suggests", "Enhances"))
+    if (additional && d$field %in% c("Suggests", "Enhances"))
       say("note", d, "not on CRAN or Bioconductor, to come from `Additional_repositories`")
     else if (is.null(bioc)) say("fail", d, paste0("not on CRAN, and Bioconductor cannot be checked: ", bioc_cause))
     else say("fail", d, "not on CRAN or Bioconductor")
@@ -102,9 +116,10 @@ for (i in seq_len(nrow(deps))) {
   if (!d$op %in% c(">=", ">", "==")) next
   need <- tryCatch(package_version(d$ver), error = function(e) NULL)
   if (is.null(need)) { say("fail", d, "no valid version"); next }
-  have <- package_version(cran[[1]])
+  have <- tryCatch(package_version(cran[[1]]), error = function(e) NULL)
+  if (is.null(have)) { say("fail", d, paste0(repo, " gives no valid version: ", cran[[1]])); next }
   if ((d$op == ">=" && need > have) || (d$op == ">" && need >= have) || (d$op == "==" && need != have))
-    say("fail", d, paste0("CRAN has ", cran[[1]]))
+    say("fail", d, paste0(repo, " has ", cran[[1]]))
 }
 '
 
@@ -236,7 +251,13 @@ cmd_hard() {
       bioc_cause="reading $bioc_url/$repo/src/contrib/PACKAGES failed: $(head -n 1 "$out/curl.err")"
       break
     fi
-    sed -n 's/^Package:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$out/PACKAGES" >>"$bioc"
+    # One `<name>\t<version>` line per package.
+    awk '
+      /^Package:/ { name = $2 }
+      /^Version:/ { version = $2 }
+      /^[ \t\r]*$/ { if (name != "") print name "\t" version; name = ""; version = "" }
+      END { if (name != "") print name "\t" version }
+    ' "$out/PACKAGES" >>"$bioc"
   done
   if [ -n "$bioc_cause" ]; then
     bioc=''
@@ -408,16 +429,28 @@ and the date in parentheses, each after one space."
   notice "Release gate" "$pkg $version passes every hard check."
 }
 
-# The URL of this job, found among the run's jobs by JOB_NAME, which a reusable workflow's caller prefixes;
-# the run's URL when the job cannot be found or the jobs cannot be read.
-this_job_url() {
-  local run="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-0}" url=''
+# The run's URL.
+run_url() { printf '%s' "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-0}"; }
+
+# --- job-url --------------------------------------------------------------
+
+# A failed lookup falls back to the run's URL, with a notice: the link is a convenience, not a check.
+cmd_job_url() {
+  [ $# -eq 0 ] || usage
+  local url='' errf
+  errf=$(mktemp)
   if [ -n "${JOB_NAME:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-    url=$("${GH:-gh}" api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/${GITHUB_RUN_ATTEMPT:-1}/jobs?per_page=100" \
-      --jq "[.jobs[] | select(.name == \"$JOB_NAME\" or (.name | endswith(\" / $JOB_NAME\")))][0].html_url // \"\"" 2>/dev/null) ||
+    if ! url=$("${GH:-gh}" api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/${GITHUB_RUN_ATTEMPT:-1}/jobs?per_page=100" \
+      --jq "[.jobs[] | select(.name == \"$JOB_NAME\" or (.name | endswith(\" / $JOB_NAME\")))][0].html_url // \"\"" 2>"$errf"); then
+      notice "Job URL" "The run's jobs cannot be read ($(head -n 1 "$errf")); the report links the run."
       url=''
+    elif [ -z "$url" ]; then
+      notice "Job URL" "No job of the run is named '$JOB_NAME'; the report links the run."
+    fi
   fi
-  printf '%s' "${url:-$run}"
+  rm -f "$errf"
+  output job-url "${url:-$(run_url)}"
+  say "${url:-$(run_url)}"
 }
 
 # --- report ---------------------------------------------------------------
@@ -449,8 +482,7 @@ cmd_report() {
   }
 
   summary "## Release gate: reported, not enforced" ""
-  local job_url deps_failed=false
-  job_url=$(this_job_url)
+  local job_url=${JOB_URL:-$(run_url)} deps_failed=false
 
   # A setup step that failed: the checks that need what it installs report themselves as not run.
   local step outcome
@@ -585,5 +617,6 @@ and the checks below that need it cannot run."
 case "${1:-}" in
   hard) shift; cmd_hard "$@" ;;
   report) shift; cmd_report "$@" ;;
+  job-url) shift; cmd_job_url "$@" ;;
   *) usage ;;
 esac

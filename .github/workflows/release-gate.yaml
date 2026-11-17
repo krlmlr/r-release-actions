@@ -105,6 +105,32 @@ jobs:
     outputs:
       report: ${{ steps.gate.outputs.report }}
     steps:
+      # Before the package's code runs; the reported checks then link this job, and hold no token.
+      # `job-name` must match this job's `name:` above; a mismatch links the run instead.
+      - name: Find this job's URL
+        id: job
+        uses: krlmlr/r-release-actions/actions/release-gate@main
+        with:
+          mode: job-url
+          job-name: Report on what CRAN expects
+          token: ${{ github.token }}
+
+      # Report-only: without the tarball, R CMD check is reported as not run, with the step's outcome.
+      # Like the job's URL, taken before the package's code runs, which then has no token within reach.
+      - name: Find, download and verify the checked tarball
+        id: tarball
+        continue-on-error: true
+        uses: krlmlr/r-release-actions/actions/checked-tarball@main
+        with:
+          sha: ${{ inputs.sha }}
+          package: ${{ needs.hard.outputs.package }}
+          version: ${{ needs.hard.outputs.version }}
+          check-workflow: ${{ inputs.check-workflow }}
+          run-id: ${{ inputs.check-run-id }}
+          branch: ${{ github.ref_name }}
+          failure-file: ${{ runner.temp }}/checked-tarball-failure.txt
+          token: ${{ github.token }}
+
       # The whole history, so that the README's check can compare when README.Rmd and README.md last changed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,21 +155,6 @@ jobs:
           extra-packages: any::rmarkdown, any::spelling, any::urlchecker, local::.
           needs: check
 
-      # Report-only: without the tarball, R CMD check is reported as not run, with the step's outcome.
-      - name: Find, download and verify the checked tarball
-        id: tarball
-        continue-on-error: true
-        uses: krlmlr/r-release-actions/actions/checked-tarball@main
-        with:
-          sha: ${{ inputs.sha }}
-          package: ${{ needs.hard.outputs.package }}
-          version: ${{ needs.hard.outputs.version }}
-          check-workflow: ${{ inputs.check-workflow }}
-          run-id: ${{ inputs.check-run-id }}
-          branch: ${{ github.ref_name }}
-          failure-file: ${{ runner.temp }}/checked-tarball-failure.txt
-          token: ${{ github.token }}
-
       - name: Run the reported checks
         id: gate
         uses: krlmlr/r-release-actions/actions/release-gate@main
@@ -152,8 +163,7 @@ jobs:
           tarball: ${{ steps.tarball.outputs.tarball }}
           tarball-outcome: ${{ steps.tarball.outcome }}
           tarball-failure-file: ${{ runner.temp }}/checked-tarball-failure.txt
-          job-name: Report on what CRAN expects
-          token: ${{ github.token }}
+          job-url: ${{ steps.job.outputs.job-url }}
           setup: |
             pandoc=${{ steps.pandoc.outcome }}
             dependencies=${{ steps.dependencies.outcome }}

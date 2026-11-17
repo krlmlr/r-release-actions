@@ -220,6 +220,8 @@ What a run does, job by job:
     as [CRAN's policy](https://cran.r-project.org/web/packages/policies.html) allows; it passes, reported.
     The field itself is reported too, for a look at whether each repository is needed and reachable.
     Any other package that is not on CRAN fails.
+    A version constraint on a Bioconductor package is checked against the version in its index, as for CRAN.
+    The gate reads Bioconductor's release indexes only, so a package that exists only in Bioconductor's devel branch fails.
     Bioconductor's indexes that cannot be read are reported once,
     and a package that is not on CRAN then fails, with that cause in its error.
   - `NEWS.md` has exactly one section for the version, found by its heading `# <package> X.Y.Z` with or without a date,
@@ -253,7 +255,11 @@ What a run does, job by job:
 The gate has no dry run: it writes nothing but its comment, and every run that finds the checklist pull request updates it.
 Runs on the same branch cancel each other, and the newest one reports.
 The calling job grants `contents: read` to read the commit, `actions: read` to find the tarball,
-and `pull-requests: write` to report; the package's own code runs only in **checks**, with a token that cannot write.
+and `pull-requests: write` to report.
+The package's own code runs only in **checks**, and only after the steps that use a token:
+the one that takes the checked tarball, and the one that finds the job's URL for the comment's links.
+That step finds the job by the name it passes as `job-name`, which must match the `name:` of **checks**;
+if it does not, the comment links the run instead of the job.
 
 ## Layout
 
