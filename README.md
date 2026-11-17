@@ -4,7 +4,7 @@ Reusable GitHub workflows and composite actions that take an R package through a
 A package's own workflows call them by a pinned release.
 
 **Status: under construction.**
-The CRAN submission is the first workflow; the check that builds the tarball it submits, the release gate,
+The CRAN submission and the release gate are the first workflows; the check that builds the tarball the submission uploads,
 win-builder and the workflow that publishes a release after acceptance follow.
 Nothing here is released yet.
 
@@ -170,6 +170,69 @@ Each step writes what it read, checked and did to the run's summary, with how to
 - **The permissions** the calling job grants: `actions: read` to find and download the artifact,
   `contents: write` to draft the release, and `pull-requests: write` to report.
   The run needs no secret beyond the workflow's own token.
+
+## Release gate
+
+[`.github/workflows/release-gate.yaml`](.github/workflows/release-gate.yaml) checks that a commit is ready for a CRAN release,
+on the release branch or, on the fast path, on `main`, after the date commit and the check workflow's run on it.
+It fails on what CRAN requires, reports on what CRAN expects without failing on it,
+and keeps one comment on the checklist pull request, which later runs update in place.
+
+```yaml
+on:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    uses: krlmlr/r-release-actions/.github/workflows/release-gate.yaml@<sha> # vX.Y.Z
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    with:
+      sha: ${{ github.sha }}
+```
+
+Inputs:
+
+- `sha` (required): the full SHA of the commit to check, the head of the branch the caller was dispatched on.
+- `check-workflow`: the file name of the check workflow that built the tarball, by default `R-CMD-check.yaml`.
+- `check-run-id`: the check run to take the tarball from; by default, the newest run of `check-workflow` on `sha` that holds it.
+
+What a run does, job by job:
+
+- **hard** runs every check that CRAN requires, and fails when any fails, with an error for each that names its cause:
+  - `Version:` has exactly three components, such as `1.2.3` or `1.2-3`.
+  - `DESCRIPTION` has no `Remotes` field.
+  - No dependency in `Depends`, `Imports` or `LinkingTo` requires a development version, one with four or more components,
+    or names a source outside CRAN as `Remotes` does, such as `owner/repo` or `github::owner/repo`.
+  - `NEWS.md` has exactly one section for the version, found by its heading `# <package> X.Y.Z` with or without a date.
+    The heading carries a date, the same as `Date:` in `DESCRIPTION`, at most 31 days before the run's date in UTC
+    and at most a day after it.
+  - CRAN's package database, [`packages.rds`](https://cran.r-project.org/web/packages/packages.rds), sets no `Deadline` for the package.
+    A package that is not on CRAN passes.
+    A database that cannot be read fails, because whether CRAN set a deadline is then unknown.
+
+  It then finds the checklist pull request as the submission does; without one, the run reports only to its summary.
+- **checks** reports on what CRAN expects, and fails on no finding.
+  It installs the package's dependencies, rmarkdown, spelling and urlchecker, and reports:
+  - help pages with a `\usage` section and without a `\value` section, leaving out pages of data sets and of the package;
+  - `README.md`, when `README.Rmd` was committed after it, or when knitting `README.Rmd` gives another `README.md`;
+  - the URLs that `urlchecker::url_check()` flags;
+  - the words that `spelling::spell_check_package()` flags;
+  - `R CMD check --as-cran --no-manual` with CRAN's incoming checks, the remote ones included,
+    on the tarball that the check workflow built and checked, taken as the submission takes it.
+    Nothing skips the incoming check of the dates.
+    Without a green check run holding the tarball, this check is reported as not run.
+
+  A check that cannot run, such as a knit that fails, is reported as not run.
+- **report** updates the release gate's comment on the checklist pull request:
+  whether the release is ready, which is whether **hard** passed, then the result of each check.
+  A report too long for a comment is cut, and the run's summary page has all of it.
+
+Runs on the same branch cancel each other, and the newest one reports.
+The calling job grants `contents: read` to read the commit, `actions: read` to find the tarball,
+and `pull-requests: write` to report; the package's own code runs only in **checks**, with a token that cannot write.
 
 ## Layout
 

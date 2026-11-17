@@ -1,0 +1,169 @@
+# Checks that a commit is ready for a CRAN release: enforces what CRAN requires, and reports on what it expects.
+# A package calls it on the release branch or, on the fast path, on `main`, after the date commit and the check workflow's run;
+# the README describes the inputs, the permissions the caller grants, and each check.
+#
+# Jobs, in order, each with only the permissions it needs:
+#   hard    fails on a version that is not a release version, `Remotes`, a dependency on a development version,
+#           a NEWS.md section not dated as DESCRIPTION or older than 31 days, and a deadline set by CRAN;
+#           finds the checklist pull request
+#   checks  reports, and never fails on a finding: help pages without `\value`, a stale README, URLs, spelling,
+#           and `R CMD check --as-cran` on the checked tarball of the commit, when a green check run holds one
+#   report  updates the release gate's one comment on the checklist pull request
+# Nothing here writes to the repository, and only `report` can write, to the pull request's comments.
+
+name: Release gate
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: "The full SHA of the commit to check, usually the dispatched branch's head (`github.sha`)"
+        required: true
+        type: string
+      check-workflow:
+        description: "The file name of the check workflow whose run built and checked the tarball (cynkratemplate's by default)"
+        required: false
+        type: string
+        default: R-CMD-check.yaml
+      check-run-id:
+        description: "The check run to take the tarball from; empty takes the newest run on `sha` that holds it"
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+# A newer run on the same branch supersedes an older one, whose report is then not written.
+concurrency:
+  group: release-gate-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hard:
+    name: Enforce what CRAN requires
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      package: ${{ steps.gate.outputs.package }}
+      version: ${{ steps.gate.outputs.version }}
+      report: ${{ steps.gate.outputs.report }}
+      pr: ${{ steps.checklist.outputs.pr }}
+    steps:
+      - name: Refuse a SHA that is not one
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=No full commit SHA::The input sha is '$SHA', not a full 40-character commit SHA."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            DESCRIPTION
+            NEWS.md
+          sparse-checkout-cone-mode: false
+
+      # R reads CRAN's package database, which is serialized R data.
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Run the hard checks
+        id: gate
+        uses: krlmlr/r-release-actions/actions/release-gate@main
+        with:
+          mode: hard
+
+      - name: Find the checklist pull request
+        id: checklist
+        if: ${{ !cancelled() && steps.gate.outputs.version != '' }}
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: find
+          package: ${{ steps.gate.outputs.package }}
+          version: ${{ steps.gate.outputs.version }}
+          require: false
+          token: ${{ github.token }}
+
+  checks:
+    name: Report on what CRAN expects
+    needs: hard
+    if: ${{ !cancelled() && needs.hard.outputs.version != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      report: ${{ steps.gate.outputs.report }}
+    steps:
+      # The whole history, so that the README's check can compare when README.Rmd and README.md last changed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: r-lib/actions/setup-pandoc@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          extra-packages: any::rmarkdown, any::spelling, any::urlchecker, local::.
+          needs: check
+
+      # Report-only: without a green check run holding the tarball, R CMD check is reported as not run.
+      - name: Find, download and verify the checked tarball
+        id: tarball
+        continue-on-error: true
+        uses: krlmlr/r-release-actions/actions/checked-tarball@main
+        with:
+          sha: ${{ inputs.sha }}
+          package: ${{ needs.hard.outputs.package }}
+          version: ${{ needs.hard.outputs.version }}
+          check-workflow: ${{ inputs.check-workflow }}
+          run-id: ${{ inputs.check-run-id }}
+          branch: ${{ github.ref_name }}
+          token: ${{ github.token }}
+
+      - name: Run the reported checks
+        id: gate
+        uses: krlmlr/r-release-actions/actions/release-gate@main
+        with:
+          mode: report
+          tarball: ${{ steps.tarball.outputs.tarball }}
+
+  report:
+    name: Report to the checklist pull request
+    needs: [hard, checks]
+    if: ${{ !cancelled() && needs.hard.outputs.pr != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Update the release gate's comment
+        uses: krlmlr/r-release-actions/actions/release-report@main
+        with:
+          mode: gate
+          pr: ${{ needs.hard.outputs.pr }}
+          package: ${{ needs.hard.outputs.package }}
+          version: ${{ needs.hard.outputs.version }}
+          results: |
+            hard=${{ needs.hard.result }}
+            checks=${{ needs.checks.result }}
+          gate-hard: ${{ needs.hard.outputs.report }}
+          gate-report: ${{ needs.checks.outputs.report }}
+          token: ${{ github.token }}
