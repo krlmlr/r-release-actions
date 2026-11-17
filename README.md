@@ -4,19 +4,184 @@ Reusable GitHub workflows and composite actions that take an R package through a
 A package's own workflows call them by a pinned release.
 
 **Status: under construction.**
-Nothing here is ready to call yet.
+The CRAN submission is the first workflow; the check that builds the tarball it submits, the release gate,
+win-builder and the workflow that publishes a release after acceptance follow.
+Nothing here is released yet.
 
-## Design
+## How a release flows
 
-The release design these workflows implement is maintained separately.
-This README will summarize it as the workflows land.
+A release is cut on a release branch, or, for a small fix, made directly on `main`.
+Before each round of checks, one commit sets the release date in both places it appears:
+the `NEWS.md` heading `# <package> X.Y.Z (YYYY-MM-DD)` and `Date:` in `DESCRIPTION`.
+The check workflow builds the source tarball once and checks that very file,
+and the submission uploads it, so nothing is rebuilt between a check and CRAN.
+Every release run is dispatched by hand, and every run reports to the release's checklist pull request.
+No tag is written at submission: `vX.Y.Z` marks what CRAN accepted, is written once at acceptance, and never moves.
+
+## CRAN submission
+
+[`.github/workflows/cran-submission.yaml`](.github/workflows/cran-submission.yaml) submits the package at a given commit.
+It runs no check and builds nothing: it takes the tarball from a check run of that commit, and fails unless that run is green.
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        type: boolean
+        default: true
+
+jobs:
+  submit:
+    uses: krlmlr/r-release-actions/.github/workflows/cran-submission.yaml@<sha> # vX.Y.Z
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    with:
+      sha: ${{ github.sha }}
+      dry-run: ${{ inputs.dry-run }}
+```
+
+For now the workflow runs this repository's actions from `main`, because a workflow cannot name the commit it is in:
+pinning the workflow by SHA pins its own steps, not yet the actions they call.
+
+Inputs:
+
+- `sha` (required): the full SHA of the commit to submit, the head of the branch the caller was dispatched on.
+- `dry-run` (required): read and verify everything, report what a real run would write and send, and write and send nothing.
+- `check-workflow`: the file name of the check workflow that built the tarball;
+  by default `R-CMD-check.yaml`, the check workflow of the cynkra/cynkratemplate package template.
+- `check-run-id`: the check run to take the tarball from; by default, the newest run of `check-workflow` on `sha` that holds it.
+- `resubmit`: submit a version that an earlier attempt submitted already, after a rejection and its fix
+  or when CRAN never received the upload; off by default.
+
+What a run does, job by job:
+
+- **version** reads `Package:` and `Version:` from `DESCRIPTION`.
+  It stops on a development version, one with more than three components.
+  It verifies the dates without changing them: exactly one `NEWS.md` section for the version,
+  whose heading carries a date, the same as the `Date:` field that `DESCRIPTION` must have,
+  within a day of the run's date in UTC.
+  A stale date fails a real run and only warns on a dry run.
+  It then finds the checklist pull request, which a real run requires.
+- **tarball** checks that `sha` is the head of the branch the submission was dispatched on, in the repository,
+  because GitHub resolves a commit that exists only in a fork as well.
+  It finds the newest push or dispatch run of the check workflow on `sha` in the repository that holds the tarball,
+  skipping pull request runs, which check a merge commit, and runs of a fork's branch; a given `check-run-id` must be such a run.
+  That run must have completed with success: otherwise the submission fails, naming the run, its conclusion and its URL.
+  It downloads the file and verifies it:
+  its SHA-256 is the artifact's digest, its name is `<package>_<version>.tar.gz`, and it holds that package and version.
+  It refuses a version that an earlier attempt comment records, whatever that attempt's commit or tarball, unless `resubmit` is on,
+  because an upload whose confirmation link nobody followed does not show in CRAN's queue,
+  and a rebuilt tarball of the same commit differs in its digest.
+  It refuses while CRAN's incoming queue holds a submission of the package, which CRAN's policy forbids.
+- **draft**, on a real run only, keeps one draft GitHub release per version, titled `<package> X.Y.Z`, for the tag name `vX.Y.Z`.
+  The first submission creates it, and each resubmission updates it:
+  its target is `sha`, its one asset the checked tarball, replacing an earlier attempt's,
+  and its notes the version's `NEWS.md` section, ending with the marker `<!-- cran-submission: <package> X.Y.Z -->`,
+  by which the workflow that publishes the release at acceptance will find it.
+  It writes no tag, and stops instead when the tag exists, when the version's release is published, or when several drafts exist.
+  This is the only job that holds a token that can write to the repository.
+- **preview**, on a dry run only, reports what **draft** would write, with a token that cannot write.
+  Such a token may not see draft releases, so it can report creating a draft that a real run updates.
+- **upload** posts the tarball to CRAN's submission form in the form's own two steps, as `devtools:::upload_cran()` does,
+  with the single line `<package> X.Y.Z` as the comment and the maintainer from the tarball's `DESCRIPTION`.
+  CRAN then emails the maintainer, and the submission counts once the link in that email is followed.
+  A form that answers 404 means CRAN is closed for maintenance, and the run shows CRAN's message.
+  A dry run reports every field it would send, and sends nothing.
+- **report**, on a real run only, adds a new comment for the attempt to the checklist pull request, which nothing edits afterwards:
+  the attempt's number for the version, the commit's SHA, the tarball's SHA-256, and links to the run and the draft.
+  Reply under it with CRAN's answer and what fixed it.
+  It then updates the workflow's one comment there with the jobs' results.
+
+### Releasing from a fork
+
+A fork submits like any repository, from its own branch, check run and checklist pull request:
+the commit must head the dispatched branch of the fork, the tarball come from a push or dispatch run in the fork,
+and the checklist pull request be open in the fork, where the draft release and the attempt comments are written too.
+Nothing is written to the parent repository, the one the fork's repository page names as its source.
+Instead, the run ends with a block of commands that bring the parent in line by hand,
+in the log of the last job (**report**, or **upload** on a dry run) and in its summary:
+push the submitted commit to the branch of the same name in the parent, which fails rather than overwrite it;
+copy the draft release with its notes and tarball to the parent, or update the parent's draft of the version;
+and comment on the parent's checklist pull request with a link to the fork's attempts.
+The commands are printed, not run: someone with push access to the parent runs them from a clone of it
+in which the remote `upstream` is the parent and `origin` the fork, after a real run.
+A run outside a fork prints no such block.
+A fork that carries a caller of this workflow can submit the package on its own,
+so the maintainer's confirmation email from CRAN can come from a run in any such fork:
+follow its link only for a submission you expect, and check the commit and the run it names.
+
+A dry run holds no token that can write, and writes nothing: no release, no comment, nothing to CRAN.
+Its results are in the run's summary.
+It still fails where a real run would stop before writing: on a development version, a missing or doubled `NEWS.md` section,
+dates that differ, a missing `Date:`, a commit that is not the head of the dispatched branch, a missing or mismatched tarball,
+a check run that is not green, an existing tag, or a published release.
+Its read-only token may not list draft releases, so it does not reliably catch several drafts of the version.
+It only warns about a stale date, a missing checklist pull request, a version submitted before, and a queued submission.
+
+Only one submission per repository runs at a time, and none is cancelled.
+Each step writes what it read, checked and did to the run's summary, with how to resolve a failure.
+
+### What the submission expects from the package
+
+- **The checked tarball.** This is the contract the check workflow implements:
+  - The check workflow builds the source tarball once per run, and each `R CMD check` job of the run checks that tarball,
+    not the checkout.
+  - Exactly one job of the run uploads the tarball, the job that ran `R CMD check` on it,
+    with `actions/upload-artifact` v7 or later, `archive: false`, and the file unchanged after the check.
+  - The artifact is the raw file, named exactly `<package>_<version>.tar.gz` as `R CMD build` names it,
+    so that its digest is the file's SHA-256.
+    Other jobs of the matrix may upload other artifacts, but no other artifact of the run has that name:
+    the submission takes the artifact with that exact name.
+    A re-run of the check keeps the earlier attempts' artifacts in the run, so of several the newest is taken,
+    and the log names the one chosen and the ones skipped.
+  - The run is a push or dispatch run of the commit in the package's own repository, and it completes with success.
+  An artifact expires after at most 90 days, which the draft's asset outlives.
+  The standard check workflow runs on a push only to `main` or `master`,
+  so on a release branch someone dispatches the check workflow on the branch before dispatching the submission.
+- **The checklist pull request.** One open pull request tracks the release:
+  the release branch's pull request into `main`, or an empty pull request beside a fix made on `main`.
+  The first line of its body is the marker `<!-- release-checklist: <package> X.Y.Z -->`, before any heading or preamble;
+  a byte order mark and whitespace around it do not matter.
+  Whoever creates checklist pull requests, a person, an App or an agent's session, starts the body like this:
+
+  ```markdown
+  <!-- release-checklist: <package> X.Y.Z -->
+  # Release <package> X.Y.Z
+  ```
+
+  A pull request that carries the marker further down, as one quoting other text might, is ignored
+  with the warning "Checklist pull request ignored", which names it as "#N by <login> (the marker is not the body's first line)".
+  A GitHub App opens it, which is the normal case, or a person with write access to the repository.
+  A bot account's pull request (`<app>[bot]`) counts when its head branch is in the repository itself.
+  Opening one needs only `pull-requests: write` on the repository:
+  any App installed with that permission can, and so can any workflow of the repository with its token, as `github-actions[bot]`.
+  This is why the marker must start the body, and why a real run fails unless exactly one pull request counts.
+  Dependabot's and Renovate's pull requests, which quote their dependencies' release notes, are ignored with a warning,
+  as is a bot's pull request from a fork.
+  A person's counts when the person has write, maintain or admin access.
+  Where a person's access cannot be read, the author's association decides:
+  a pull request by anyone but an owner, member or collaborator is ignored with a warning, so a stray marker blocks nothing,
+  while an owner's, member's or collaborator's fails a real run with GitHub's error and is accepted with a warning on a dry run.
+  Two or more pull requests that count fail a real run with "No single checklist pull request".
+- **The dates**, set by the date commit before the checks, as described above: `Date:` in `DESCRIPTION` is required.
+- **The permissions** the calling job grants: `actions: read` to find and download the artifact,
+  `contents: write` to draft the release, and `pull-requests: write` to report.
+  The run needs no secret beyond the workflow's own token.
 
 ## Layout
 
-- `.github/workflows/` will hold the reusable workflows, each triggered by `workflow_call`.
-- `actions/<name>/` will hold one composite action each, in `action.yml`.
+- `.github/workflows/` holds the reusable workflows, each triggered by `workflow_call`.
+- `actions/<name>/` holds one composite action each, in `action.yml`.
   A script the action runs lives beside it, with its offline test next to it,
   so that each action can be tested without a network or a package to release.
+  `actions/cran-lib/` holds the shell helpers the scripts and their tests share.
+- The tests run with `for t in actions/*/*-test.sh; do "$t"; done`, against stubs and local servers:
+  they reach neither GitHub nor CRAN.
+- A reusable workflow calls this repository's actions at `@main`,
+  because a workflow cannot name the commit it is in; every other action is pinned by full SHA.
 
 ## Versioning
 

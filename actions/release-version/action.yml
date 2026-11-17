@@ -1,0 +1,39 @@
+name: "Release version"
+description: >
+  Reads the package name, the version and the dates from DESCRIPTION and NEWS.md in the checkout,
+  fails on a development version or on dates that are not the submission date,
+  and writes the release notes with the submission marker,
+  with release-version.sh beside this file.
+
+inputs:
+  path:
+    description: "The package's checkout"
+    default: "."
+  dry-run:
+    description: "`true` turns a stale date into a warning"
+    default: "false"
+
+outputs:
+  package:
+    description: "The package name"
+    value: ${{ steps.run.outputs.package }}
+  version:
+    description: "The release version"
+    value: ${{ steps.run.outputs.version }}
+  date:
+    description: "The release date, YYYY-MM-DD"
+    value: ${{ steps.run.outputs.date }}
+  notes:
+    description: "The path of the release notes, ending with the submission marker"
+    value: ${{ steps.run.outputs.notes }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: run
+      env:
+        PACKAGE_DIR: ${{ inputs.path }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        "$GITHUB_ACTION_PATH/release-version.sh" "$PACKAGE_DIR" "$RUNNER_TEMP/release-version"
+      shell: bash

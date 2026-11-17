@@ -1,0 +1,106 @@
+# Adapted from krlmlr/duckplyr's .github/actions/release-report/action.yml at f98ad13 (MIT).
+name: "Release report"
+description: >
+  Finds the release's checklist pull request by its marker (mode `find`),
+  refuses a version an earlier attempt submitted (mode `submitted`),
+  keeps the workflow's one comment there, updated in place (mode `status`),
+  or records a submission attempt in a new comment (mode `attempt`),
+  or, in a fork, prints the commands that bring the parent repository in line by hand (mode `sync`),
+  with release-report.sh beside this file.
+  The job needs `pull-requests: read` for `find` and `submitted`, only the repository's metadata, which every token can read,
+  for `sync`, and `pull-requests: write` otherwise.
+
+inputs:
+  mode:
+    description: "`find`, `submitted`, `status`, `attempt` or `sync`"
+    required: true
+  token:
+    description: "A token with the permission the mode needs"
+    required: true
+  pr:
+    description: "`submitted`, `status`, `attempt`, `sync`: the checklist pull request's number"
+    default: ""
+  package:
+    description: "`find`, `submitted`, `attempt`, `sync`: the package name"
+    default: ""
+  version:
+    description: "`find`, `submitted`, `attempt`, `sync`: the release version"
+    default: ""
+  require:
+    description: "`find`: `true` fails without exactly one checklist pull request"
+    default: "false"
+  key:
+    description: "`status`: identifies the workflow's comment"
+    default: ""
+  title:
+    description: "`status`: the comment's heading"
+    default: ""
+  results:
+    description: "`status`: one `<job>=<result>` per line"
+    default: ""
+  details:
+    description: "`status`: Markdown appended below the job results"
+    default: ""
+  sha:
+    description: "`attempt`, `sync`: the full SHA of the submitted commit"
+    default: ""
+  sha256:
+    description: "`attempt`: the tarball's SHA-256"
+    default: ""
+  resubmit:
+    description: "`submitted`: `true` lets a version an earlier attempt submitted through"
+    default: "false"
+  dry-run:
+    description: >-
+      `submitted`: `true` only warns about a version an earlier attempt submitted;
+      `sync`: `true` marks the commands as for a real run
+    default: "false"
+  tarball-name:
+    description: "`attempt`: the tarball's file name"
+    default: ""
+  draft-url:
+    description: "`attempt`: the draft release's URL"
+    default: ""
+  branch:
+    description: "`sync`: the branch the submission was dispatched on"
+    default: ""
+
+outputs:
+  pr:
+    description: "`find`: the checklist pull request's number, or empty"
+    value: ${{ steps.run.outputs.pr }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: run
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        MODE: ${{ inputs.mode }}
+        PR: ${{ inputs.pr }}
+        PACKAGE: ${{ inputs.package }}
+        VERSION: ${{ inputs.version }}
+        REQUIRE: ${{ inputs.require }}
+        KEY: ${{ inputs.key }}
+        TITLE: ${{ inputs.title }}
+        RESULTS: ${{ inputs.results }}
+        DETAILS: ${{ inputs.details }}
+        SHA: ${{ inputs.sha }}
+        SHA256: ${{ inputs.sha256 }}
+        TARBALL_NAME: ${{ inputs.tarball-name }}
+        DRAFT_URL: ${{ inputs.draft-url }}
+        RESUBMIT: ${{ inputs.resubmit }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        BRANCH: ${{ inputs.branch }}
+      run: |
+        script="$GITHUB_ACTION_PATH/release-report.sh"
+        case "$MODE" in
+          find) "$script" find "$PACKAGE" "$VERSION" ;;
+          submitted) "$script" submitted "$PR" "$PACKAGE" "$VERSION" ;;
+          status) "$script" status "$PR" "$KEY" "$TITLE" ;;
+          attempt) "$script" attempt "$PR" "$PACKAGE" "$VERSION" "$SHA" "$SHA256" "$TARBALL_NAME" ;;
+          sync) "$script" sync "$PACKAGE" "$VERSION" "$SHA" "$BRANCH" "$PR" ;;
+          *) echo "::error::Unknown mode: $MODE"; exit 2 ;;
+        esac
+      shell: bash

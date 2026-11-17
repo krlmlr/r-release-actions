@@ -1,0 +1,58 @@
+name: "CRAN draft release"
+description: >
+  Creates the version's draft release, or updates it on a resubmission,
+  targeting the submitted commit, with the NEWS.md section and the submission marker as its notes
+  and the checked tarball as its one asset; writes no tag,
+  with cran-draft.sh beside this file.
+  The job needs `contents: write`.
+
+inputs:
+  package:
+    description: "The package name"
+    required: true
+  version:
+    description: "The release version"
+    required: true
+  sha:
+    description: "The full SHA of the submitted commit, the draft's target"
+    required: true
+  notes:
+    description: "The path of the release notes, ending with the submission marker"
+    required: true
+  tarball:
+    description: "The path of the checked tarball"
+    required: true
+  dry-run:
+    description: "`true` writes nothing and reports what would be written"
+    default: "false"
+  token:
+    description: "A token with `contents: write`"
+    required: true
+
+outputs:
+  action:
+    description: "`create` or `update`"
+    value: ${{ steps.run.outputs.action }}
+  release-id:
+    description: "The draft's ID, on a real run"
+    value: ${{ steps.run.outputs.release-id }}
+  release-url:
+    description: "The draft's URL, when it exists"
+    value: ${{ steps.run.outputs.release-url }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: run
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        PACKAGE: ${{ inputs.package }}
+        VERSION: ${{ inputs.version }}
+        SHA: ${{ inputs.sha }}
+        NOTES: ${{ inputs.notes }}
+        TARBALL: ${{ inputs.tarball }}
+      run: |
+        "$GITHUB_ACTION_PATH/cran-draft.sh" "$PACKAGE" "$VERSION" "$SHA" "$NOTES" "$TARBALL"
+      shell: bash
