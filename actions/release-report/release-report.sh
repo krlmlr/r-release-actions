@@ -5,9 +5,10 @@
 #
 #   find <package> <version>
 #     The checklist pull request is the open pull request whose body carries
-#     `<!-- release-checklist: <package> <version> -->` and whose author has write access to the repository,
-#     or, where the token cannot read that, is an owner, member or collaborator;
-#     one carrying the marker by anyone else is named in a warning and ignored.
+#     `<!-- release-checklist: <package> <version> -->` and whose author is either an App's bot account
+#     with the head branch in this repository, or a person with write access to the repository,
+#     or, where the token cannot read that, an owner, member or collaborator;
+#     one carrying the marker by anyone else, or by a bot from a fork, is named in a warning and ignored.
 #     Writes `pr` to GITHUB_OUTPUT. None, or more than one, fails when REQUIRE is `true`, and warns otherwise.
 #   submitted <pr> <package> <version>
 #     Refuses a version that an earlier attempt comment records, whatever its commit or tarball,
@@ -65,18 +66,29 @@ cmd_find() {
   # shellcheck disable=SC2064  # expand now
   trap "rm -f '$errf'" EXIT
   found=$("$gh" api --paginate "repos/$repo/pulls?state=open&per_page=100" \
-    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | [.number, .author_association, .user.login] | @tsv" 2>"$errf") ||
+    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | [.number, .author_association, .user.login, .user.type, (.head.repo.full_name // \"-\")] | @tsv" 2>"$errf") ||
     fail "Checklist" "The open pull requests cannot be read" "Listing the open pull requests of $repo failed: $(head -n 1 "$errf")." -- \
       "Check that the calling job grants \`pull-requests: read\`, then dispatch the submission again."
-  # The author needs write access, read from `collaborators/<login>/permission` (admin, maintain and write read as
+  # An App's bot account (type `Bot`, login `<app>[bot]`) has no collaborator permission to read. Its pull request counts
+  # when its head branch is in this repository: only an App installed here with write access can open such a pull request.
+  # A bot's pull request from a fork is ignored with a warning.
+  # A person needs write access, read from `collaborators/<login>/permission` (admin, maintain and write read as
   # `admin` or `write`). That endpoint answers 404 for an App's bot account and may for someone outside the repository,
   # so an unreadable permission falls back to the author's association with the repository:
   # anyone but an owner, member or collaborator is ignored with a warning, as a stray marker must not block a release;
   # an owner, member or collaborator whose access cannot be verified fails a real run with GitHub's error,
   # and a dry run warns and accepts them.
-  local number assoc login perm trusted='' others=''
-  while IFS=$'\t' read -r number assoc login; do
+  local number assoc login type head perm trusted='' others=''
+  while IFS=$'\t' read -r number assoc login type head; do
     [ -n "$number" ] || continue
+    if [ "$type" = Bot ] && [[ $login =~ ^[A-Za-z0-9-]+\[bot\]$ ]]; then
+      if [ "$head" = "$repo" ]; then
+        trusted+="$number"$'\n'
+      else
+        others+="#$number by $login (a bot, from $head) "
+      fi
+      continue
+    fi
     if [[ $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]]; then
       perm=$("$gh" api "repos/$repo/collaborators/$login/permission" --jq .permission 2>"$errf") || perm=''
     else
@@ -105,7 +117,7 @@ cmd_find() {
   done <<<"$found"
   trusted=${trusted%$'\n'}
   [ -z "$others" ] ||
-    warn "Checklist pull request ignored" "Ignored ${others}: the checklist pull request must be opened by someone with write access."
+    warn "Checklist pull request ignored" "Ignored ${others}: the checklist pull request must be opened by someone with write access, or by an App from a branch of $repo."
   n=$(count_lines "$trusted")
   if [ "$n" -eq 1 ]; then
     say "Checklist pull request: #$trusted"
@@ -117,7 +129,7 @@ cmd_find() {
   [ "$n" -eq 0 ] || what="$n open pull requests ($(printf '%s' "$trusted" | sed 's/^/#/' | paste -s -d ' ' -))"
   if [ "${REQUIRE:-false}" = true ]; then
     fail "Checklist" "No single checklist pull request" \
-      "There is $what by someone with write access whose body carries \`$marker\`; the submission records each attempt there. Nothing was drafted or uploaded." -- \
+      "There is $what by someone with write access or an App whose body carries \`$marker\`; the submission records each attempt there. Nothing was drafted or uploaded." -- \
       "Put the marker \`$marker\` into the body of the release's checklist pull request, and only of that one, then dispatch the submission again."
   fi
   warn "No single checklist pull request" "There is $what whose body carries $marker; a real run fails."

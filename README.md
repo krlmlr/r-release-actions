@@ -125,13 +125,16 @@ Each step writes what it read, checked and did to the run's summary, with how to
   so on a release branch someone dispatches the check workflow on the branch before dispatching the submission.
 - **The checklist pull request.** One open pull request tracks the release:
   the release branch's pull request into `main`, or an empty pull request beside a fix made on `main`.
-  Its body carries the marker `<!-- release-checklist: <package> X.Y.Z -->`,
-  and its author has write access to the repository; a pull request carrying the marker by anyone else is ignored with a warning.
-  Where the author's access cannot be read, as for an App's bot account, the author's association decides:
+  Its body carries the marker `<!-- release-checklist: <package> X.Y.Z -->`.
+  A GitHub App opens it, which is the normal case, or a person with write access to the repository.
+  An App's pull request, by a bot account (`<app>[bot]`), counts when its head branch is in the repository itself,
+  because only an App installed on the repository with write access can open such a pull request;
+  an App's pull request from a fork is ignored with a warning naming it.
+  A person's counts when the person has write, maintain or admin access.
+  Where a person's access cannot be read, the author's association decides:
   a pull request by anyone but an owner, member or collaborator is ignored with a warning, so a stray marker blocks nothing,
   while an owner's, member's or collaborator's fails a real run with GitHub's error and is accepted with a warning on a dry run.
-  So a person with write access opens the checklist pull request: one opened by an App account such as a bot is ignored,
-  and a real run then fails with "No single checklist pull request", after a warning naming the ignored pull request.
+  Two or more pull requests that count fail a real run with "No single checklist pull request".
 - **The dates**, set by the date commit before the checks, as described above: `Date:` in `DESCRIPTION` is required.
 - **The permissions** the calling job grants: `actions: read` to find and download the artifact,
   `contents: write` to draft the release, and `pull-requests: write` to report.

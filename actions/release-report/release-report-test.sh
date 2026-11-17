@@ -3,8 +3,9 @@
 # Adapted from krlmlr/duckplyr's .github/actions/release-report/release-report-test.sh at f98ad13 (MIT).
 # Check release-report.sh offline, against a `gh` stub: nothing reaches GitHub.
 #
-#   1. `find` takes the open pull request carrying the version's marker by an owner, member or collaborator,
-#      ignores one by anyone else with a warning, and fails without exactly one when required.
+#   1. `find` takes the open pull request carrying the version's marker by an App's bot from a branch of the repository,
+#      or by a person with write access, falling back to an owner, member or collaborator;
+#      it ignores one by anyone else, or by a bot from a fork, with a warning, and fails without exactly one when required.
 #   2. `status` posts the workflow's comment, then updates it; a comment with the marker by someone else is left alone;
 #      the overall result is failure when any job failed.
 #   3. `attempt` posts a new comment numbered after the earlier attempts of the version, and edits none;
@@ -35,8 +36,11 @@ run() {
     "$HERE/release-report.sh" "$@" 2>&1) || rc=$?
   printf '%s\nexit %s\n' "$out" "$rc"
 }
-pull() { # <number> <association> <login> <body>
-  printf '{"number": %s, "author_association": "%s", "user": {"login": "%s"}, "body": "%s"}' "$1" "$2" "$3" "$4"
+pull() { # <number> <association> <login> <body> [<user type> [<head repository>]]
+  local head='null'
+  [ "${6-owner/fakepkg}" = null ] || head="{\"full_name\": \"${6-owner/fakepkg}\"}"
+  printf '{"number": %s, "author_association": "%s", "user": {"login": "%s", "type": "%s"}, "head": {"repo": %s}, "body": "%s"}' \
+    "$1" "$2" "$3" "${5:-User}" "$head" "$4"
 }
 comment() { # <id> <login> <body>
   printf '{"id": %s, "html_url": "https://github.example/comment/%s", "user": {"login": "%s"}, "body": "%s"}' "$1" "$1" "$2" "$3"
@@ -62,13 +66,33 @@ out=$(run find fakepkg 1.0.1)
 has "a dry run lets a member's stand in" "$(cat "$SCRATCH/output")" "pr=5"
 has "with a warning" "$out" "::warning title=Permission unknown::The access of member"
 has "and someone else's is ignored" "$out" "Ignored #6 by nobody (NONE, access unreadable)"
-# A stray marker by an App's bot or an outsider, whose access the endpoint does not answer, must not block the release.
-answer "$PULLS" "[$(pull 3 NONE 'dependabot[bot]' "$MARK"), $(pull 2 CONTRIBUTOR outsider "$MARK"), $(pull 7 NONE maint "$MARK")]"
+# A stray marker by a bot from a fork or an outsider, whose access the endpoint does not answer, must not block the release.
+answer "$PULLS" "[$(pull 3 NONE 'some-app[bot]' "$MARK" Bot someone/fakepkg), $(pull 1 NONE 'gone-app[bot]' "$MARK" Bot null), $(pull 2 CONTRIBUTOR outsider "$MARK"), $(pull 7 NONE maint "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
-has "stray marker pull requests whose author's access is unreadable do not block a real run" "$out" "exit 0"
+has "stray marker pull requests by a bot from a fork or an outsider do not block a real run" "$out" "exit 0"
 is "which takes the valid checklist pull request" "$(cat "$SCRATCH/output")" "pr=7"
-has "naming the bot's in the warning" "$out" "#3 by dependabot[bot] (NONE, access unreadable)"
+has "naming the bot's from a fork in the warning" "$out" "#3 by some-app[bot] (a bot, from someone/fakepkg)"
+has "and the bot's whose fork is gone" "$out" "#1 by gone-app[bot] (a bot, from -)"
 has "and the outsider's" "$out" "#2 by outsider (CONTRIBUTOR, access unreadable)"
+hasnt "a bot's access is not read" "$(cat "$SCRATCH/gh.log")" "collaborators/some-app[bot]"
+section "find: a checklist pull request opened by an App"
+: >"$SCRATCH/gh.log"
+answer "$PULLS" "[$(pull 4 CONTRIBUTOR stranger "$MARK"), $(pull 11 NONE 'release-app[bot]' "Checklist\n\n$MARK" Bot)]"
+out=$(REQUIRE=true run find fakepkg 1.0.1)
+has "an App's from a branch of the repository is found on a real run" "$out" "exit 0"
+is "as the checklist pull request" "$(cat "$SCRATCH/output")" "pr=11"
+hasnt "without reading the bot's access" "$(cat "$SCRATCH/gh.log")" "collaborators/release-app[bot]"
+answer "$PULLS" "[$(pull 11 NONE 'release-app[bot]' "$MARK" Bot), $(pull 7 NONE maint "$MARK")]"
+out=$(REQUIRE=true run find fakepkg 1.0.1)
+has "an App's and a person's fail as no single one" "$out" "::error title=No single checklist pull request::"
+has "naming both" "$out" "2 open pull requests (#11 #7)"
+answer "$PULLS" "[$(pull 11 NONE 'release-app[bot]' "$MARK" Bot), $(pull 12 NONE 'other-app[bot]' "$MARK" Bot)]"
+out=$(REQUIRE=true run find fakepkg 1.0.1)
+has "as do two Apps'" "$out" "2 open pull requests (#11 #12)"
+answer "$PULLS" "[$(pull 13 NONE 'not-a-bot[bot]' "$MARK" User)]"
+out=$(REQUIRE=true run find fakepkg 1.0.1)
+has "a login ending in [bot] that is no bot account takes the person's path" "$out" "#13 by not-a-bot[bot] (NONE, access unreadable)"
+section "find: more"
 answer "$PULLS" "[$(pull 4 MEMBER stranger "$MARK")]"
 out=$(REQUIRE=true run find fakepkg 1.0.1)
 has "only a stranger's fails when required, whatever the association" "$out" "::error title=No single checklist pull request::"
