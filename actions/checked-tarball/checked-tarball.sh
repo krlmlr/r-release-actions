@@ -18,16 +18,26 @@
 #     That run must have completed with success, or the submission fails, naming the run, its conclusion and its URL.
 #     Of several unexpired artifacts of that name in the run, which re-runs leave, the newest is taken,
 #     and the log names the one chosen and the ones skipped.
+#     With REQUIRE_RECOMPRESSED=true, the same run must also hold the sidecar `<package>_<version>.tar.gz.json`,
+#     taken as the tarball is, and `metadata-artifact-id` and `metadata-sha256` are written too;
+#     `artifact-ids` lists the artifacts to download, the tarball's and the sidecar's.
 #   verify <tarball> <sha256> <package> <version>
 #     The file's SHA-256 is the artifact's digest, it is a gzip-compressed tar archive,
 #     its name is `<package>_<version>.tar.gz`, and its DESCRIPTION names that package and version.
 #     Writes `tarball` and `sha256` to GITHUB_OUTPUT.
+#   sidecar <json> <json sha256> <tarball> <sha> <package> <version>
+#     The sidecar the check run wrote beside the tarball, a JSON object, has the SHA-256 of its artifact's digest,
+#     says `"recompressed": true`, names `<package>_<version>.tar.gz`, records <sha> as its `commit`,
+#     and records the SHA-256 of <tarball>, the downloaded file.
+#     Writes `compression` to GITHUB_OUTPUT.
 #
 # Environment:
 #   GH_REPO          owner/name of the package's repository; GH_TOKEN a token with `actions: read`
 #   GH               the gh command, default `gh`; checked-tarball-test.sh stubs it
 #   CHECK_WORKFLOW   the check workflow's file name, default R-CMD-check.yaml
 #   CHECK_RUN_ID     a run to take the tarball from, instead of searching
+#   REQUIRE_RECOMPRESSED  `true` to require the sidecar in `find`, default `false`
+#   BRANCH           the branch the submission was dispatched on, named in the command that dispatches a suitable check run
 #   GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, GITHUB_ACTIONS, GITHUB_SERVER_URL
 #
 # Exit status: 0 on success, 1 on a failed check, 2 on a usage error.
@@ -51,6 +61,21 @@ trap 'rm -f "$apierr"' EXIT
 api() { "$gh" api "$@" 2>"$apierr"; }
 api_error() { head -n 1 "$apierr"; }
 
+# The command that dispatches a check run whose tarball a CRAN submission takes.
+dispatch_command() {
+  printf 'gh workflow run %s --ref %s -f cran-submission=true' "${CHECK_WORKFLOW:-R-CMD-check.yaml}" "${BRANCH:-<branch>}"
+}
+dispatch_advice() {
+  printf '%s' "Dispatch the check workflow on the branch with \`cran-submission\` on, \`$(dispatch_command)\`, \
+wait until it is green, and dispatch the submission again."
+}
+
+# The unexpired artifacts of a name in a run, as `<id> <digest> <created at>` lines, newest first.
+artifacts_named() { # <repo> <run> <name>
+  api "repos/$1/actions/runs/$2/artifacts?name=$3&per_page=100" \
+    --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[] | "\(.id) \(.digest // "") \(.created_at)"'
+}
+
 cmd_find() {
   [ $# -eq 3 ] || usage
   local sha=$1 pkg=$2 version=$3
@@ -62,6 +87,14 @@ cmd_find() {
   local name="${pkg}_${version}.tar.gz"
   [[ $workflow =~ ^[A-Za-z0-9._-]+$ ]] || fail "Tarball" "No valid workflow name" "\`$workflow\` is no workflow file name." -- \
     "Pass the check workflow's file name, such as \`R-CMD-check.yaml\`."
+  local require=${REQUIRE_RECOMPRESSED:-false}
+  case "$require" in
+    true | false) ;;
+    *) fail "Tarball" "No valid require-recompressed" "\`require-recompressed\` is \`$require\`, not \`true\` or \`false\`." -- \
+      "Pass \`true\` for the tarball a CRAN submission takes, or \`false\`." ;;
+  esac
+  local dispatch="Dispatch the check workflow on this commit, wait until it is green, and dispatch the submission again."
+  [ "$require" = false ] || dispatch=$(dispatch_advice)
 
   summary "## Checked tarball" ""
   group "Tarball: the check run of $(printf '%s' "${sha:0:10}")"
@@ -99,8 +132,7 @@ cmd_find() {
   local r found='' artifact=''
   for r in $runs; do
     # Newest first: a re-run of the check keeps the earlier attempts' artifacts of the same name in the run.
-    artifact=$(api "repos/$repo/actions/runs/$r/artifacts?name=$name&per_page=100" \
-      --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[] | "\(.id) \(.digest // "") \(.created_at)"') ||
+    artifact=$(artifacts_named "$repo" "$r" "$name") ||
       fail "Tarball" "The artifacts cannot be read" "The artifacts of the run $r cannot be read from $repo: $(api_error)." -- \
         "Check that the job holds \`actions: read\`, then dispatch the submission again."
     if [ -n "$artifact" ]; then
@@ -117,7 +149,7 @@ cmd_find() {
   [ -n "$found" ] ||
     fail "Tarball" "No checked tarball" \
       "No ${run_id:+given }push or dispatch run of \`$workflow\` on \`${sha:0:10}\` in $repo holds an unexpired artifact \`$name\`." -- \
-      "Dispatch the check workflow on this commit, wait until it is green, and dispatch the submission again." \
+      "$dispatch" \
       "An artifact expires after at most 90 days: a commit checked that long ago is checked again."
   local artifact_id=${artifact%% *} digest=${artifact#* }
   local sha256=${digest#sha256:}
@@ -141,6 +173,30 @@ cmd_find() {
   fi
   summary "- Check run: [$found]($run_url), $conclusion" "- Artifact: \`$name\`, id $artifact_id, sha256 \`$sha256\`" ""
   output run-id "$found" run-url "$run_url" artifact-id "$artifact_id" sha256 "$sha256"
+  if [ "$require" = false ]; then
+    output artifact-ids "$artifact_id"
+    return 0
+  fi
+
+  # The sidecar comes from the same run as the tarball, and the newest of its name, as the tarball is.
+  local meta
+  meta=$(artifacts_named "$repo" "$found" "$name.json") ||
+    fail "Tarball" "The artifacts cannot be read" "The artifacts of the run $found cannot be read from $repo: $(api_error)." -- \
+      "Check that the job holds \`actions: read\`, then dispatch the submission again."
+  [ -n "$meta" ] ||
+    fail "Tarball" "No tarball metadata" \
+      "The run $found of \`$workflow\` holds \`$name\` but no unexpired artifact \`$name.json\`, so it was not built for a CRAN submission: $run_url. Nothing was drafted or uploaded." -- \
+      "$(dispatch_advice)" \
+      "A check workflow that writes no sidecar predates the recompressed tarball; update it from the package template."
+  meta=$(head -n 1 <<<"$meta")
+  meta=${meta% *}
+  local meta_id=${meta%% *} meta_digest=${meta#* }
+  local meta_sha256=${meta_digest#sha256:}
+  [[ $meta_sha256 =~ ^[0-9a-f]{64}$ ]] ||
+    fail "Tarball" "The tarball metadata has no SHA-256 digest" "The artifact $meta_id of run $found has the digest \`$meta_digest\`." -- \
+      "The check workflow uploads the sidecar with \`actions/upload-artifact\` v7 or later and \`archive: false\`, which records the file's SHA-256."
+  summary "- Metadata: \`$name.json\`, id $meta_id" ""
+  output metadata-artifact-id "$meta_id" metadata-sha256 "$meta_sha256" artifact-ids "$artifact_id,$meta_id"
 }
 
 cmd_commit() {
@@ -208,9 +264,60 @@ cmd_verify() {
   output tarball "$tarball" sha256 "$actual"
 }
 
+cmd_sidecar() {
+  [ $# -eq 6 ] || usage
+  local json=$1 expected=$2 tarball=$3 sha=$4 pkg=$5 version=$6
+  { valid_sha "$sha" && valid_package "$pkg" && valid_version "$version"; } || usage
+  local name="${pkg}_${version}.tar.gz" actual
+  group "Metadata: $name.json"
+  [ -f "$json" ] || fail "Metadata" "No tarball metadata downloaded" "The download left no \`$name.json\`. Nothing was drafted or uploaded." -- \
+    "The check workflow uploads the sidecar as a raw file with \`archive: false\`, named \`$name.json\`." \
+    "Dispatch the submission again; if this persists, $(dispatch_command)."
+  actual=$(sha256_of "$json")
+  [ "$actual" = "$expected" ] ||
+    fail "Metadata" "The tarball metadata is not the uploaded one" \
+      "The downloaded \`$name.json\` has the SHA-256 \`$actual\`, and its artifact's digest is \`$expected\`. Nothing was drafted or uploaded." -- \
+      "Dispatch the submission again; if this persists, $(dispatch_command)."
+  jq -e 'type == "object"' "$json" >/dev/null 2>&1 ||
+    fail "Metadata" "The tarball metadata cannot be read" "\`$name.json\` is no JSON object. Nothing was drafted or uploaded." -- \
+      "Check the artifact the check workflow uploaded."
+  local m_name m_sha256 m_commit m_recompressed m_compression
+  m_recompressed=$(jq -c '.recompressed' "$json")
+  m_compression=$(jq -r '.compression // "" | tostring' "$json")
+  m_name=$(jq -r '.name // "" | tostring' "$json")
+  m_commit=$(jq -r '.commit // "" | tostring' "$json")
+  m_sha256=$(jq -r '.sha256 // "" | tostring' "$json")
+  val "recompressed" "$m_recompressed"
+  val "compression" "$m_compression"
+  val "name" "$m_name"
+  val "commit" "$m_commit"
+  val "sha256" "$m_sha256"
+  [ "$m_recompressed" = true ] ||
+    fail "Metadata" "The tarball is not recompressed" \
+      "\`$name.json\` records \`\"recompressed\": $m_recompressed\` (\`$m_compression\`): the check run was not dispatched with \`cran-submission\` on. Nothing was drafted or uploaded." -- \
+      "$(dispatch_advice)" \
+      "Or pass \`check-run-id\` for a green run of this commit dispatched that way, when a newer run without it holds a tarball too."
+  [ "$m_name" = "$name" ] ||
+    fail "Metadata" "The tarball metadata is of another file" "\`$name.json\` names \`$m_name\`, and the release is \`$name\`. Nothing was drafted or uploaded." -- \
+      "Check the sidecar the check workflow wrote; it names the tarball it describes."
+  [ "$m_commit" = "$sha" ] ||
+    fail "Metadata" "The tarball metadata is of another commit" \
+      "\`$name.json\` records the commit \`$m_commit\`, and the submission is of \`$sha\`. Nothing was drafted or uploaded." -- \
+      "$(dispatch_advice)"
+  actual=$(sha256_of "$tarball")
+  [ "$m_sha256" = "$actual" ] ||
+    fail "Metadata" "The tarball does not match its metadata" \
+      "\`$name.json\` records the SHA-256 \`$m_sha256\`, and the downloaded \`$name\` has \`$actual\`. Nothing was drafted or uploaded." -- \
+      "$(dispatch_advice)"
+  endgroup
+  summary "- Metadata: \`$name\` was recompressed with \`$m_compression\` from \`${sha:0:10}\`, and has the SHA-256 the sidecar records." ""
+  output compression "$m_compression"
+}
+
 case "${1:-}" in
   commit) shift; cmd_commit "$@" ;;
   find) shift; cmd_find "$@" ;;
   verify) shift; cmd_verify "$@" ;;
+  sidecar) shift; cmd_sidecar "$@" ;;
   *) usage ;;
 esac

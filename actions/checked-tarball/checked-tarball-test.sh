@@ -9,6 +9,10 @@
 #      of several artifacts of the name, which re-runs leave, the newest is taken and the log names them all.
 #   4. `verify` accepts the file whose SHA-256 is the digest and which holds the release,
 #      and rejects another digest, another release, and a file that is no tarball.
+#   5. With REQUIRE_RECOMPRESSED, `find` also takes the run's sidecar, and fails without one, naming the command to dispatch;
+#      `sidecar` accepts the sidecar of a recompressed tarball of the commit with the file's SHA-256,
+#      and rejects a missing or altered sidecar, one that is no JSON object, a tarball not recompressed,
+#      another name, another commit, and another SHA-256, each with its own error.
 #
 # Usage:
 #   actions/checked-tarball/checked-tarball-test.sh
@@ -68,7 +72,8 @@ hasnt "skipping the pull request run and the fork's" "$(cat "$SCRATCH/gh.log")" 
 is "the outputs" "$(cat "$SCRATCH/output")" "run-id=11
 run-url=https://github.example/owner/fakepkg/actions/runs/11
 artifact-id=501
-sha256=$DIGEST"
+sha256=$DIGEST
+artifact-ids=501"
 hasnt "a green run does not warn" "$out" "::warning"
 has "the summary links the run" "$(cat "$SUMMARY")" "- Check run: [11](https://github.example/owner/fakepkg/actions/runs/11), completed success"
 
@@ -137,6 +142,40 @@ out=$(CHECK_RUN_ID=11 run find "$SHA" fakepkg 1.0.1)
 has "the digest check applies to the chosen one" "$out" "::error title=The artifact has no SHA-256 digest::The artifact 503"
 artifact 11 501 2026-11-14T12:30:00Z "sha256:$DIGEST"
 
+section "find with require-recompressed"
+answer "repos/owner/fakepkg/actions/runs/11/artifacts?name=$NAME.json&per_page=100" \
+  "{\"artifacts\": [{\"id\": 502, \"expired\": false, \"created_at\": \"2026-11-14T12:30:00Z\", \"digest\": \"sha256:$DIGEST\"}]}"
+out=$(CHECK_RUN_ID=11 REQUIRE_RECOMPRESSED=true BRANCH=release-1.0.1 run find "$SHA" fakepkg 1.0.1)
+has "a run with the tarball and its sidecar passes" "$out" "exit 0"
+is "with the sidecar's artifact in the outputs" "$(cat "$SCRATCH/output")" "run-id=11
+run-url=https://github.example/owner/fakepkg/actions/runs/11
+artifact-id=501
+sha256=$DIGEST
+metadata-artifact-id=502
+metadata-sha256=$DIGEST
+artifact-ids=501,502"
+out=$(CHECK_RUN_ID=11 run find "$SHA" fakepkg 1.0.1)
+has "without it, only the tarball is downloaded" "$(cat "$SCRATCH/output")" "artifact-ids=501"
+hasnt "and no sidecar is looked for" "$(cat "$SCRATCH/output")" "metadata"
+answer "repos/owner/fakepkg/actions/runs/11/artifacts?name=$NAME.json&per_page=100" \
+  '{"artifacts": [{"id": 503, "expired": true, "created_at": "2026-11-14T12:30:00Z", "digest": "sha256:'"$DIGEST"'"}]}'
+out=$(CHECK_RUN_ID=11 REQUIRE_RECOMPRESSED=true BRANCH=release-1.0.1 run find "$SHA" fakepkg 1.0.1)
+has "a run without an unexpired sidecar fails" "$out" \
+  "::error title=No tarball metadata::The run 11 of \`R-CMD-check.yaml\` holds \`$NAME\` but no unexpired artifact \`$NAME.json\`"
+has "naming the command that dispatches a suitable run" "$out" \
+  "\`gh workflow run R-CMD-check.yaml --ref release-1.0.1 -f cran-submission=true\`"
+has "in the summary too" "$(cat "$SUMMARY")" "gh workflow run R-CMD-check.yaml --ref release-1.0.1 -f cran-submission=true"
+hasnt "and outputs no sidecar" "$(cat "$SCRATCH/output")" "metadata"
+answer "repos/owner/fakepkg/actions/runs/11/artifacts?name=$NAME.json&per_page=100" \
+  '{"artifacts": [{"id": 502, "expired": false, "created_at": "2026-11-14T12:30:00Z", "digest": "sha256:bbbb"}]}'
+out=$(CHECK_RUN_ID=11 REQUIRE_RECOMPRESSED=true run find "$SHA" fakepkg 1.0.1)
+has "a sidecar without a SHA-256 digest fails" "$out" "::error title=The tarball metadata has no SHA-256 digest::The artifact 502"
+out=$(REQUIRE_RECOMPRESSED=true run find "$OTHER" fakepkg 1.0.1)
+has "no tarball at all fails as before" "$out" "::error title=No checked tarball::"
+has "naming the command, with a placeholder without a branch" "$out" "gh workflow run R-CMD-check.yaml --ref <branch> -f cran-submission=true"
+out=$(CHECK_RUN_ID=11 REQUIRE_RECOMPRESSED=yes run find "$SHA" fakepkg 1.0.1)
+has "a value that is neither true nor false fails" "$out" "::error title=No valid require-recompressed::"
+
 section "commit"
 answer "repos/owner/fakepkg/commits/$SHA/branches-where-head" '[{"name": "release-1.0.1"}]'
 out=$(run commit "$SHA")
@@ -181,5 +220,50 @@ out=$(run verify "$T" "$(sha256sum "$T" | cut -d' ' -f1)" fakepkg 1.0.1)
 has "a file that is no tarball fails" "$out" "::error title=The tarball cannot be read::"
 out=$(run verify "$SCRATCH/dl/missing_1.0.1.tar.gz" "$TSHA" missing 1.0.1)
 has "no file fails" "$out" "::error title=No tarball downloaded::"
+
+section "sidecar"
+printf 'Package: fakepkg\nVersion: 1.0.1\n' >"$SCRATCH/pkg/fakepkg/DESCRIPTION"
+tar -czf "$T" -C "$SCRATCH/pkg" fakepkg
+TSHA=$(sha256sum "$T" | cut -d' ' -f1)
+J=$SCRATCH/dl/$NAME.json
+sidecar() { # <json> [<sha>]: writes the sidecar, and runs `sidecar` on it with its own SHA-256
+  printf '%s\n' "$1" >"$J"
+  run sidecar "$J" "$(sha256sum "$J" | cut -d' ' -f1)" "$T" "${2:-$SHA}" fakepkg 1.0.1
+}
+GOOD='{"name":"'"$NAME"'","sha256":"'"$TSHA"'","commit":"'"$SHA"'","recompressed":true,"compression":"pigz -11 -n"}'
+out=$(sidecar "$GOOD")
+has "the sidecar of a recompressed tarball of the commit with its SHA-256 passes" "$out" "exit 0"
+is "with the compression in the outputs" "$(cat "$SCRATCH/output")" "compression=pigz -11 -n"
+has "and the summary" "$(cat "$SUMMARY")" "was recompressed with \`pigz -11 -n\`"
+out=$(BRANCH=release-1.0.1 run sidecar "$SCRATCH/dl/missing.json" "$DIGEST" "$T" "$SHA" fakepkg 1.0.1)
+has "no sidecar downloaded fails" "$out" "::error title=No tarball metadata downloaded::"
+out=$(run sidecar "$J" "$DIGEST" "$T" "$SHA" fakepkg 1.0.1)
+has "a sidecar that is not the uploaded one fails" "$out" "::error title=The tarball metadata is not the uploaded one::"
+out=$(sidecar 'not json')
+has "a sidecar that is no JSON fails" "$out" "::error title=The tarball metadata cannot be read::"
+out=$(sidecar '[1]')
+has "as does one that is no object" "$out" "::error title=The tarball metadata cannot be read::"
+out=$(BRANCH=release-1.0.1 sidecar "${GOOD/\"recompressed\":true/\"recompressed\":false}")
+has "a tarball not recompressed fails" "$out" "exit 1"
+has "naming what the sidecar records" "$out" \
+  "::error title=The tarball is not recompressed::\`$NAME.json\` records \`\"recompressed\": false\` (\`pigz -11 -n\`)"
+has "and the command that dispatches a suitable run" "$out" \
+  "\`gh workflow run R-CMD-check.yaml --ref release-1.0.1 -f cran-submission=true\`"
+out=$(CHECK_WORKFLOW=check.yaml BRANCH=main sidecar "${GOOD/\"recompressed\":true/\"recompressed\":\"true\"}")
+has "a string \"true\" is not recompressed" "$out" "::error title=The tarball is not recompressed::"
+has "with the caller's check workflow and branch in the command" "$out" "gh workflow run check.yaml --ref main -f cran-submission=true"
+out=$(sidecar '{"name":"'"$NAME"'","sha256":"'"$TSHA"'","commit":"'"$SHA"'"}')
+has "a sidecar without recompressed fails" "$out" "records \`\"recompressed\": null\`"
+out=$(sidecar "${GOOD/$NAME/fakepkg_1.0.0.tar.gz}")
+has "a sidecar of another file fails" "$out" \
+  "::error title=The tarball metadata is of another file::\`$NAME.json\` names \`fakepkg_1.0.0.tar.gz\`"
+out=$(sidecar "$GOOD" "$OTHER")
+has "a sidecar of another commit fails" "$out" \
+  "::error title=The tarball metadata is of another commit::\`$NAME.json\` records the commit \`$SHA\`, and the submission is of \`$OTHER\`."
+out=$(sidecar "${GOOD/$TSHA/$DIGEST}")
+has "a sidecar with another SHA-256 fails" "$out" \
+  "::error title=The tarball does not match its metadata::\`$NAME.json\` records the SHA-256 \`$DIGEST\`, and the downloaded \`$NAME\` has \`$TSHA\`."
+out=$(sidecar "$GOOD" 0123)
+has "a short commit is a usage error" "$out" "exit 2"
 
 done_testing

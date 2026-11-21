@@ -7,6 +7,7 @@
 #            and finds the checklist pull request (a real run fails without one)
 #   tarball  checks that the commit heads the dispatched branch of the repository, finds the push or dispatch run of the check workflow
 #            on it and its tarball artifact, fails unless that run is green, downloads and verifies the tarball,
+#            and checks against the run's sidecar that the tarball was recompressed for the submission and is the one it records,
 #            refuses a version an earlier attempt submitted (unless `resubmit`),
 #            and refuses while CRAN's incoming queue holds a submission of the package
 #   draft    a real run only: creates or updates the version's draft release with the tarball attached; writes no tag
@@ -132,6 +133,9 @@ jobs:
           check-workflow: ${{ inputs.check-workflow }}
           run-id: ${{ inputs.check-run-id }}
           branch: ${{ github.ref_name }}
+          # Only a tarball the check run recompressed, from a run dispatched with `cran-submission` on;
+          # the later jobs take the SHA-256 verified here.
+          require-recompressed: true
           token: ${{ github.token }}
 
       # An upload whose confirmation link nobody followed does not show in CRAN's queue; its attempt comment does.

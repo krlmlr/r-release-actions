@@ -5,6 +5,8 @@ description: >
   with checked-tarball.sh beside this file.
   Without `artifact-id`, first checks that the commit is the head of a branch of the repository,
   and finds the run and the artifact.
+  With `require-recompressed` as well, it also downloads the sidecar `<package>_<version>.tar.gz.json` of that run
+  and requires that it records a recompressed tarball of `sha` whose SHA-256 is the downloaded file's.
   The job needs `actions: read`, and `contents: read` without `artifact-id`.
 
 inputs:
@@ -32,6 +34,11 @@ inputs:
   sha256:
     description: "With `artifact-id`: the artifact's digest"
     default: ""
+  require-recompressed:
+    description: >
+      `true` to take only a tarball that the check run recompressed for a CRAN submission, as its sidecar records;
+      checked only without `artifact-id`, where the run is found, so that a later job passes on the verified `sha256`
+    default: "false"
   token:
     description: "A token with `actions: read` and, without `artifact-id`, `contents: read` on the repository"
     required: true
@@ -70,17 +77,19 @@ runs:
         BRANCH: ${{ inputs.branch }}
         PACKAGE: ${{ inputs.package }}
         VERSION: ${{ inputs.version }}
+        REQUIRE_RECOMPRESSED: ${{ inputs.require-recompressed }}
         FAILURE_FILE: ${{ inputs.failure-file }}
       run: |
         "$GITHUB_ACTION_PATH/checked-tarball.sh" commit "$SHA" ${BRANCH:+"$BRANCH"}
         "$GITHUB_ACTION_PATH/checked-tarball.sh" find "$SHA" "$PACKAGE" "$VERSION"
       shell: bash
 
-    # Fails on a digest mismatch; the verify step below checks the digest again, independently.
+    # Fails on a digest mismatch; the verify and sidecar steps below check the digests again, independently.
+    # The tarball's artifact, and the sidecar's when `require-recompressed` is on.
     - id: download
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        artifact-ids: ${{ steps.find.outputs.artifact-id || inputs.artifact-id }}
+        artifact-ids: ${{ steps.find.outputs.artifact-ids || inputs.artifact-id }}
         run-id: ${{ steps.find.outputs.run-id || inputs.run-id }}
         github-token: ${{ inputs.token }}
         path: ${{ runner.temp }}/checked-tarball
@@ -98,13 +107,30 @@ runs:
         "$GITHUB_ACTION_PATH/checked-tarball.sh" verify "${tarball:-$RUNNER_TEMP/checked-tarball/$name}" "$SHA256" "$PACKAGE" "$VERSION"
       shell: bash
 
+    - id: sidecar
+      if: inputs.artifact-id == '' && inputs.require-recompressed == 'true'
+      env:
+        SHA256: ${{ steps.find.outputs.metadata-sha256 }}
+        TARBALL: ${{ steps.verify.outputs.tarball }}
+        SHA: ${{ inputs.sha }}
+        PACKAGE: ${{ inputs.package }}
+        VERSION: ${{ inputs.version }}
+        CHECK_WORKFLOW: ${{ inputs.check-workflow }}
+        BRANCH: ${{ inputs.branch }}
+        FAILURE_FILE: ${{ inputs.failure-file }}
+      run: |
+        name="${PACKAGE}_${VERSION}.tar.gz.json"
+        json="$(find "$RUNNER_TEMP/checked-tarball" -type f -name "$name" | head -n 1)"
+        "$GITHUB_ACTION_PATH/checked-tarball.sh" sidecar "${json:-$RUNNER_TEMP/checked-tarball/$name}" "$SHA256" "$TARBALL" "$SHA" "$PACKAGE" "$VERSION"
+      shell: bash
+
     # The download step is not this repository's script, so its failure is written here.
     - if: failure() && steps.download.outcome == 'failure' && inputs.failure-file != ''
       env:
         FAILURE_FILE: ${{ inputs.failure-file }}
-        ARTIFACT: ${{ steps.find.outputs.artifact-id || inputs.artifact-id }}
+        ARTIFACT: ${{ steps.find.outputs.artifact-ids || inputs.artifact-id }}
         RUN: ${{ steps.find.outputs.run-id || inputs.run-id }}
       run: |
-        echo "The tarball cannot be downloaded: downloading artifact $ARTIFACT of run $RUN failed, \
+        echo "The tarball cannot be downloaded: downloading artifacts $ARTIFACT of run $RUN failed, \
         on a digest mismatch, an expired artifact, or a token without actions: read." >"$FAILURE_FILE"
       shell: bash

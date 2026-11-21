@@ -15,6 +15,7 @@ Before each round of checks, one commit sets the release date in both places it 
 the `NEWS.md` heading `# <package> X.Y.Z (YYYY-MM-DD)` and `Date:` in `DESCRIPTION`.
 The check workflow builds the source tarball once and checks that very file,
 and the submission uploads it, so nothing is rebuilt between a check and CRAN.
+For the submission, the check workflow is dispatched with `cran-submission` on, which recompresses the tarball before the check.
 Every release run is dispatched by hand, and every run reports to the release's checklist pull request.
 No tag is written at submission: `vX.Y.Z` marks what CRAN accepted, is written once at acceptance, and never moves.
 
@@ -53,6 +54,7 @@ Inputs:
 - `check-workflow`: the file name of the check workflow that built the tarball;
   by default `R-CMD-check.yaml`, the check workflow of the cynkra/cynkratemplate package template.
 - `check-run-id`: the check run to take the tarball from; by default, the newest run of `check-workflow` on `sha` that holds it.
+  That run must have been dispatched with `cran-submission` on.
 - `resubmit`: submit a version that an earlier attempt submitted already, after a rejection and its fix
   or when CRAN never received the upload; off by default.
 
@@ -72,6 +74,12 @@ What a run does, job by job:
   That run must have completed with success: otherwise the submission fails, naming the run, its conclusion and its URL.
   It downloads the file and verifies it:
   its SHA-256 is the artifact's digest, its name is `<package>_<version>.tar.gz`, and it holds that package and version.
+  It downloads the run's sidecar `<package>_<version>.tar.gz.json` too, and fails with its own error
+  when the run holds none, when it does not record `"recompressed": true`, when it names another file,
+  when its `commit` is not `sha`, or when its `sha256` is not the downloaded file's.
+  Each of these errors names the command that dispatches a suitable check run, such as
+  `gh workflow run R-CMD-check.yaml --ref <branch> -f cran-submission=true`.
+  The later jobs download the tarball again and verify it against the SHA-256 this job verified.
   It refuses a version that an earlier attempt comment records, whatever that attempt's commit or tarball, unless `resubmit` is on,
   because an upload whose confirmation link nobody followed does not show in CRAN's queue,
   and a rebuilt tarball of the same commit differs in its digest.
@@ -117,7 +125,8 @@ A dry run holds no token that can write, and writes nothing: no release, no comm
 Its results are in the run's summary.
 It still fails where a real run would stop before writing: on a development version, a missing or doubled `NEWS.md` section,
 dates that differ, a missing `Date:`, a commit that is not the head of the dispatched branch, a missing or mismatched tarball,
-a check run that is not green, an existing tag, or a published release.
+a missing or mismatched sidecar, a tarball that is not recompressed, a check run that is not green,
+an existing tag, or a published release.
 Its read-only token may not list draft releases, so it does not reliably catch several drafts of the version.
 It only warns about a stale date, a missing checklist pull request, a version submitted before, and a queued submission.
 
@@ -137,10 +146,22 @@ Each step writes what it read, checked and did to the run's summary, with how to
     the submission takes the artifact with that exact name.
     A re-run of the check keeps the earlier attempts' artifacts in the run, so of several the newest is taken,
     and the log names the one chosen and the ones skipped.
+  - The same job uploads the sidecar `<package>_<version>.tar.gz.json` as a second artifact of that name, also with `archive: false`:
+    one line of JSON with `name`, the tarball's file name, `sha256`, its SHA-256, `commit`, the full SHA it was built from,
+    `recompressed`, `true` when it was recompressed with `pigz -11 -n` and verified, and `compression`, how it was compressed.
+    The submission takes only a tarball whose sidecar records `"recompressed": true`, `sha` as its commit, and its SHA-256.
   - The run is a push or dispatch run of the commit in the package's own repository, and it completes with success.
   An artifact expires after at most 90 days, which the draft's asset outlives.
-  The standard check workflow runs on a push only to `main` or `master`,
-  so on a release branch someone dispatches the check workflow on the branch before dispatching the submission.
+  The check workflow recompresses the tarball only when dispatched with `cran-submission` on,
+  and such a run fails rather than upload a tarball that is not recompressed and verified.
+  So before the submission, someone dispatches it on the branch whose head is submitted, and waits until it is green:
+
+  ```sh
+  gh workflow run R-CMD-check.yaml --ref <branch> -f cran-submission=true
+  ```
+
+  A newer run of the commit without `cran-submission`, which also holds a tarball, is taken first and fails the submission;
+  pass the run dispatched with `cran-submission` on as `check-run-id`, or dispatch the check workflow as above again.
 - **The checklist pull request.** One open pull request tracks the release:
   the release branch's pull request into `main`, or an empty pull request beside a fix made on `main`.
   The first line of its body is the marker `<!-- release-checklist: <package> X.Y.Z -->`, before any heading or preamble;
@@ -177,8 +198,9 @@ Each step writes what it read, checked and did to the run's summary, with how to
 to win-builder and to macbuilder, and reports both on the checklist pull request.
 These checks inform the release and never gate it: the submission neither waits for them nor reads their results.
 Both check on R-devel only; the `actions/builders` action also takes the other flavors, which the workflow does not use.
-The workflow takes the tarball exactly as the submission does, from a green check run of the commit,
-so what the builders check is the file that CRAN receives.
+The workflow takes the tarball as the submission does, from a green check run of the commit,
+but does not require the recompressed tarball of a run dispatched with `cran-submission` on.
+What the builders check is the file that CRAN receives when they take the run the submission takes.
 
 ```yaml
 on:
@@ -210,7 +232,8 @@ What a run does, job by job:
 - **version** reads `Package:` and `Version:` from `DESCRIPTION`, and only warns about the dates,
   because the builders may run days before the submission.
   It finds the checklist pull request, and runs on without one.
-- **tarball** finds the check run and its tarball artifact, and verifies the file, as the submission's job of that name does.
+- **tarball** finds the check run and its tarball artifact, and verifies the file,
+  as the submission's job of that name does, without the sidecar.
 - **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/R-devel/`,
   as `devtools::check_win_devel()` does, retrying a refused connection or an unresolved host twice.
   Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
