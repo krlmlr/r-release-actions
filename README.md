@@ -369,12 +369,14 @@ What a run does:
   which an earlier run left unfinished.
   It stops when there is none, and fails before writing anything when the releases, the open pull requests
   or the repository's default branch cannot be read.
-- It reads the source index of Posit's package manager,
+- On a run with something to finish, it reads the source index of Posit's package manager,
   `https://packagemanager.posit.co/cran/latest/src/contrib/PACKAGES.gz`, once.
   That is the test `fledge:::release_after_cran_built_binaries()` made, and a listing there also means the binaries are on their way.
   A version the index does not list yet is a line in the run's summary, and the run stays green.
   A later version in the index counts too, so that a draft left behind by a missed run still finishes.
-  A run finishes at most one accepted release, and leaves any other for the next run, so that it fits the job's timeout.
+  Versions compare as R's `package_version()` compares them, so `1.0-1` equals `1.0.1.0`.
+  A run finishes at most one accepted release, and leaves any other for the next run, so that it fits the job's timeout;
+  a release that is only handed over, warned about or stopped does not count, and no release is started after 10 minutes.
 - For a draft whose version the index lists, it takes these steps in order, and stops at the first that fails:
   - **compare**: it checks that the draft's target is a full commit SHA, as the submission writes it,
     and that `DESCRIPTION` there carries the package and the version.

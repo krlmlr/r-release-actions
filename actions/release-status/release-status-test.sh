@@ -415,6 +415,32 @@ out=$(run)
 has "is done" "$out" "nothing to do"
 is "it writes nothing" "$(cat "$SCRATCH/writes")" ""
 
+section "a handed-over release does not block the next one"
+answer "$R/commits/refs/tags/v1.0.1" "{\"sha\": \"$SHA\"}"
+answer "$R/releases?per_page=100" "[$(published 7 v1.0.1), $(published 6 v1.0.0)]"
+answer "$R/pulls?state=open&per_page=100" "[{\"number\": 12, \"author_association\": \"OWNER\", \"user\": {\"login\": \"maint\", \"type\": \"User\"}, \"head\": {\"repo\": {\"full_name\": \"owner/fakepkg\"}}, \"body\": \"$MARK\"},
+  {\"number\": 11, \"author_association\": \"OWNER\", \"user\": {\"login\": \"maint\", \"type\": \"User\"}, \"head\": {\"repo\": {\"full_name\": \"owner/fakepkg\"}}, \"body\": \"<!-- release-checklist: fakepkg 1.0.0 -->\"}]"
+answer "$R/pulls/12" '{"changed_files": 3, "head": {"ref": "release-1.0.1", "repo": {"full_name": "fork/fakepkg"}}, "base": {"ref": "main"}}'
+out=$(run)
+has "the first is handed over" "$out" "::warning title=Handed over::fakepkg 1.0.1"
+hasnt "without spending the run's budget" "$out" "left for the next run"
+has "so the second is taken up and checked" "$out" "::error title=The release's target is not fakepkg 1.0.0::"
+out=$(RELEASE_STATUS_START_LIMIT=0 run)
+has "no release is started after the time limit" "$out" "fakepkg 1.0.1 is on P3M, and is left for the next run"
+answer "$R/pulls/12" '{"changed_files": 3, "head": {"ref": "release-1.0.1", "repo": {"full_name": "owner/fakepkg"}}, "base": {"ref": "main"}}'
+
+section "versions compare as R's package_version() does"
+answer "$R/releases?per_page=100" "[$(draft 7 v1.0.1 fakepkg_1.0.1.tar.gz "sha256:$DSHA")]"
+answer "$R/git/matching-refs/tags/v1.0.1" '[]'
+answer "$R/pulls?state=open&per_page=100" "[{\"number\": 12, \"author_association\": \"OWNER\", \"user\": {\"login\": \"maint\", \"type\": \"User\"}, \"head\": {\"repo\": {\"full_name\": \"owner/fakepkg\"}}, \"body\": \"$MARK\"}]"
+p3m_lists 1.0-1.0
+out=$(run --dry-run)
+has "trailing zeros and \`-\` make no difference, so the draft is the latest" "$(cat "$SUMMARY")" "Would publish the draft as the latest release."
+p3m_lists 1.0
+out=$(run --dry-run)
+has "an earlier version with fewer components is not later" "$(cat "$SUMMARY")" "fakepkg 1.0.1 is not on P3M yet"
+p3m_lists 1.0.1
+
 section "compare"
 cran_tarball 'f <- function() 1'
 succeeds "the tarballs match but for what CRAN writes" "$HERE/release-status.sh" compare "$SRV/cran/src/contrib/fakepkg_1.0.1.tar.gz" "$DRAFT"

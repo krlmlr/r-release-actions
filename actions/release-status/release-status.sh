@@ -9,7 +9,8 @@
 #     It reads the source index of Posit's package manager once, P3M_REPO_URL/src/contrib/PACKAGES.gz,
 #     as `fledge:::release_after_cran_built_binaries()` did; a listing there also means the binaries are on their way.
 #     A version that index does not list yet, nor a later one, is a line in the report, and success.
-#     A run finishes at most one release whose version is listed, and leaves the others for the next run.
+#     A run writes to at most one release whose version is listed, and starts none after RELEASE_STATUS_START_LIMIT seconds;
+#     the others are left for the next run, and one that is only handed over, warned about or stopped does not count.
 #     For a draft whose version is listed, in this order, stopping at the first step that fails:
 #       1. compare  checks that the draft's target is a full SHA whose DESCRIPTION carries the package and version,
 #                   then compares CRAN's tarball of the version, from CRAN_URL/src/contrib/ or its Archive/<package>/,
@@ -47,6 +48,7 @@
 #   GH                   the gh command, default `gh`; release-status-test.sh stubs it
 #   P3M_REPO_URL         default https://packagemanager.posit.co/cran/latest
 #   CRAN_URL             default https://cran.r-project.org; release-status-test.sh points both at a local server
+#   RELEASE_STATUS_START_LIMIT  the seconds after which no release is started, default 600
 #   GITHUB_OUTPUT        receives `published`, one `<package> <version>` per line for each release this run published
 #   GITHUB_STEP_SUMMARY, GITHUB_ACTIONS, GITHUB_SERVER_URL, GITHUB_RUN_ID
 #
@@ -240,42 +242,47 @@ p3m_version() { # <package>
     this && /^Version:/ { print $2; exit }' "$work/PACKAGES"
 }
 
-# Exit 0 when version <a> is later than <b>, as R's package_version() orders them:
-# components split at `.` or `-` and compared as numbers, and of two versions equal up to the shorter one's end, the longer is later.
-version_gt() { # <a> <b>
+# Prints 1, 0 or -1 as version <a> is later than, equal to, or earlier than <b>, as R's package_version() orders them:
+# components split at `.` or `-` and compared as numbers, a missing component counting as 0, so that 1.0 equals 1.0.0.
+version_cmp() { # <a> <b>
   awk -v a="$1" -v b="$2" 'BEGIN {
     na = split(a, x, /[.-]/); nb = split(b, y, /[.-]/)
-    for (i = 1; i <= na && i <= nb; i++) {
-      if (x[i] + 0 > y[i] + 0) exit 0
-      if (x[i] + 0 < y[i] + 0) exit 1
+    for (i = 1; i <= na || i <= nb; i++) {
+      if (x[i] + 0 > y[i] + 0) { print 1; exit }
+      if (x[i] + 0 < y[i] + 0) { print -1; exit }
     }
-    exit !(na > nb)
+    print 0
   }'
 }
+version_gt() { [ "$(version_cmp "$1" "$2")" = 1 ]; }
+version_eq() { [ "$(version_cmp "$1" "$2")" = 0 ]; }
 
 # At most one accepted release is finished per run, so that a run fits its job's timeout; the next run takes the next one.
+# Only a release the run writes to (a tag, a release, a merge, a bump or a close) spends the budget:
+# one that is only handed over, warned about or stopped does not, so it never blocks the others.
+# No release is started after RELEASE_STATUS_START_LIMIT seconds, 600 by default, which bounds a run with several handovers.
 budget=1
+spend() { budget=0; }
 
 # Sets `served` to the version P3M lists for <package>, and exit 0 when that is <version> or a later one,
-# which means CRAN accepted <version>, and this run has not finished another release yet.
-# Otherwise it reports the version as not on P3M yet, or left for the next run, and exits 1.
+# which means CRAN accepted <version>, and the run may still finish a release.
+# Otherwise it reports the version as not on P3M yet and exits 1, or as left for the next run and exits 2.
 accepted() { # <package> <version>
   served=$(p3m_version "$1")
   val "P3M lists" "${served:-(not listed)}"
-  if [ "$served" != "$2" ] && { [ -z "$served" ] || ! version_gt "$served" "$2"; }; then
+  if [ -z "$served" ] || ! { version_eq "$served" "$2" || version_gt "$served" "$2"; }; then
     endgroup
     say "$1 $2 is not on P3M yet: $index_url lists ${served:+$1 $served}${served:-no $1}."
     summary "- $1 $2 is not on P3M yet: $index_url lists ${served:+$1 $served}${served:-no $1}." ""
     return 1
   fi
-  if [ "$budget" -eq 0 ]; then
+  if [ "$budget" -eq 0 ] || [ "$SECONDS" -ge "${RELEASE_STATUS_START_LIMIT:-600}" ]; then
     endgroup
     say "$1 $2 is on P3M, and is left for the next run, which finishes one release at a time."
     summary "- $1 $2 is on P3M, and is left for the next run, which finishes one release at a time." ""
-    return 1
+    return 2
   fi
-  budget=0
-  if [ "$served" = "$2" ]; then
+  if version_eq "$served" "$2"; then
     did "P3M lists $1 $2, so CRAN has accepted it."
   else
     did "P3M lists $1 $served, later than $2, so CRAN published $2 before, if it accepted it: its tarball must be in CRAN's archive."
@@ -338,6 +345,7 @@ checklist_pr() { # <package> <version>
 commit_bump() { # <branch> <package> <version>
   local branch=$1 pkg=$2 version=$3 head tree dir b1 b2 newtree commit changed got
   bumped=''
+  : >"$work/gh.err"
   head=$("$gh" api "repos/$repo/git/ref/heads/$branch" --jq .object.sha 2>>"$work/gh.err") || return 1
   dir=$(mktemp -d "$work/bump.XXXXXX")
   file_at DESCRIPTION "$head" "$dir/DESCRIPTION" || return 1
@@ -355,6 +363,7 @@ commit_bump() { # <branch> <package> <version>
     bump_note="\`$branch\` carries the development bump already"
     return 0
   fi
+  spend
   if dry; then
     bumped=$head
     bump_note="would commit the development bump, $pkg $version.9000, to \`$branch\`"
@@ -493,6 +502,7 @@ git push origin $qbranch"
       report "$pr" "(dry run)"
       return 0
     fi
+    spend
     if ! "$gh" api -X PATCH "repos/$repo/pulls/$pr" -f state=closed --jq .state >/dev/null 2>"$work/gh.err"; then
       failure "$title" "The checklist pull request could not be closed" "Closing #$pr failed: $(first_err)." "$work/gh.err" -- \
         "Dispatch the workflow again, or close #$pr by hand; the bump is on \`$default_branch\`."
@@ -531,17 +541,21 @@ gh pr merge $pr --merge"
     report "$pr" "⚠️"
     return 0
   fi
-  local bumped_already='' hsha
-  if hsha=$("$gh" api "repos/$repo/git/ref/heads/$head" --jq .object.sha 2>>"$work/gh.err") &&
-    file_at DESCRIPTION "$hsha" "$work/head-DESCRIPTION" &&
-    [ "$(dcf_field Version "$work/head-DESCRIPTION")" = "$version.9000" ]; then
-    bumped_already=1
+  local hsha
+  : >"$work/gh.err"
+  if ! hsha=$("$gh" api "repos/$repo/git/ref/heads/$head" --jq .object.sha 2>>"$work/gh.err") ||
+    ! file_at DESCRIPTION "$hsha" "$work/head-DESCRIPTION"; then
+    failure "$title" "The release branch cannot be read" "Reading DESCRIPTION at the head of \`$head\` failed: $(first_err); nothing was merged or bumped." "$work/gh.err" -- \
+      "Dispatch the workflow again: the release is tagged and published, and the next run finishes it while #$pr is open."
+    return 1
   fi
-  if [ -n "$bumped_already" ]; then
+  if [ "$(dcf_field Version "$work/head-DESCRIPTION")" = "$version.9000" ]; then
     did "\`$head\` carries the development bump already, so \`$default_branch\` is not merged into it again."
   elif dry; then
+    spend
     did "Would merge \`$default_branch\` into \`$head\`."
   else
+    spend
     if ! merged=$("$gh" api -X POST "repos/$repo/merges" -f "base=$head" -f "head=$default_branch" \
       -f "commit_message=Merge branch '$default_branch' into $head" --jq '.sha // ""' 2>"$work/gh.err"); then
       endgroup
@@ -579,6 +593,7 @@ gh pr merge $pr --merge"
     report "$pr" "(dry run)"
     return 0
   fi
+  spend
   if ! "$gh" api -X PUT "repos/$repo/pulls/$pr/merge" -f merge_method=merge -f "sha=$bumped" --jq .sha >"$work/merge.out" 2>"$work/gh.err"; then
     endgroup
     handover "merging #$pr into \`$default_branch\` failed ($(first_err)), as where \`$default_branch\` is protected. Merge it with a merge commit once its checks pass." \
@@ -596,14 +611,16 @@ gh pr merge $pr --merge"
 # whose DESCRIPTION carries the version, and CRAN's tarball matches the release's asset, but for what CRAN writes.
 # <kind> is `draft` or `release`. Stops the version with a failure, reported on <pr>, and exit 1 otherwise; sets `sha`.
 check_release() { # <kind> <package> <version> <target> <url> <asset id> <digest> <pr>
-  local kind=$1 pkg=$2 version=$3 target=$4 url=$5 aid=$6 digest=$7 pr=$8 nothing refused rc
+  local kind=$1 pkg=$2 version=$3 target=$4 url=$5 aid=$6 digest=$7 pr=$8 nothing refused abandoned rc
   local base="${pkg}_${version}.tar.gz" dir=$work/$pkg-$version
   mkdir -p "$dir/cran" "$dir/draft"
   nothing="nothing was tagged or published"
   refused="so the tag was refused"
+  abandoned="Where P3M lists a later version and CRAN's archive has no $base, CRAN never published $version: delete its draft, as for an abandoned version."
   if [ "$kind" != draft ]; then
     nothing="nothing was merged or bumped"
     refused="so the release is not finished"
+    abandoned="Where P3M lists a later version and CRAN's archive has no $base, CRAN never published $version, though its release is published: a maintainer turns the release back into a draft, or deletes it, and closes its checklist pull request."
   fi
   if ! valid_sha "$target"; then
     STOP_DID="the $kind's target \`$target\` is no full commit SHA, so the submitted commit is unknown; $nothing." \
@@ -641,7 +658,7 @@ check_release() { # <kind> <package> <version> <target> <url> <asset id> <digest
     failure "$title" "CRAN's tarball cannot be read" \
       "Neither $cran/src/contrib/$base nor its archive copy could be downloaded: $(tail -n 1 "$work/curl.err"); $nothing." "$work/curl.err" -- \
       "CRAN's mirrors may lag behind P3M by a few hours: the next scheduled run tries again, or dispatch the workflow later." \
-      "Where P3M lists a later version and CRAN's archive has no $base, CRAN never published $version: delete its draft, as for an abandoned version."
+      "$abandoned"
     return 1
   fi
   if ! timeout 300 "$gh" api "repos/$repo/releases/assets/$aid" -H 'Accept: application/octet-stream' >"$dir/draft/$base" 2>"$work/gh.err"; then
@@ -685,12 +702,13 @@ resume() { # <tag> <package> <version> <target> <url> <asset id> <digest>
   local tag=$1 pkg=$2 version=$3 target=$4 url=$5 aid=$6 digest=$7 pr tagged
   group "Release: $title, published"
   val "release" "$url"
-  if ! accepted "$pkg" "$version"; then
-    [ "$budget" -eq 0 ] ||
-      warn "Published before CRAN lists it" \
-        "$url is published and its checklist pull request is open, but P3M does not list $title yet, so nothing is merged or bumped until it does."
-    return 0
+  local rc=0
+  accepted "$pkg" "$version" || rc=$?
+  if [ "$rc" -eq 1 ]; then
+    warn "Published before CRAN lists it" \
+      "$url is published and its checklist pull request is open, but P3M does not list $title yet, so nothing is merged or bumped until it does."
   fi
+  [ "$rc" -eq 0 ] || return 0
   summary "### $title" "" "- Release: [$title]($url), published, with its checklist pull request still open." "- P3M lists $pkg $served." ""
   if ! pr=$(checklist_pr "$pkg" "$version"); then
     failure "$title" "The checklist pull request cannot be found" "Reading the open pull requests failed: $(first_err)." "$work/gh.err" -- \
@@ -755,7 +773,8 @@ process() { # <tag> <package> <version> <target> <url> <id> <asset id> <digest>
   fi
   check_release draft "$pkg" "$version" "$target" "$url" "$aid" "$digest" "$pr" || return 1
 
-  # 2. tag
+  # 2. tag; from here on the run writes to this release.
+  spend
   if ! tagged=$(tag_commit "$tag" 2>"$work/gh.err"); then
     failure "$title" "The tag cannot be read" "Reading the tag $tag failed: $(first_err); nothing was tagged or published." "$work/gh.err" -- \
       "Dispatch the workflow again; nothing was tagged or published."
@@ -805,7 +824,7 @@ git push origin $tag"
 
   # 3. publish
   if dry; then
-    if [ "$served" = "$version" ]; then
+    if version_eq "$served" "$version"; then
       did "Would publish the draft as the latest release."
     else
       did "Would publish the draft, not as the latest release, since P3M lists $pkg $served."
@@ -813,7 +832,7 @@ git push origin $tag"
   else
     # Only the version P3M lists is the latest; an older one finished after it is published below it.
     latest=false
-    [ "$served" != "$version" ] || latest=true
+    ! version_eq "$served" "$version" || latest=true
     if ! "$gh" api -X PATCH "repos/$repo/releases/$id" -F draft=false -f "make_latest=$latest" --jq .html_url >/dev/null 2>"$work/gh.err"; then
       STOP_DID="publishing the draft failed; the tag stays, and the next run publishes it." \
         STOP_LEFT="dispatch the workflow again once the token can publish releases." \

@@ -37,10 +37,11 @@ jobs:
     concurrency:
       group: release-status-${{ github.repository }}
       cancel-in-progress: false
-    # A run finishes at most one accepted release, and leaves any other for the next run.
+    # A run writes to at most one accepted release, leaves any other for the next run, and starts none after 10 minutes.
     # Its downloads are bounded: the P3M index takes at most 3 attempts of 2 minutes (6 minutes),
     # and the accepted release at most 2 attempts of 2 minutes at each of CRAN's 2 URLs (8 minutes)
-    # and 5 minutes for the release's asset: 19 minutes, which leaves 11 minutes for the calls to GitHub.
+    # and 5 minutes for the release's asset: a release started before minute 10 ends its downloads by minute 23,
+    # which leaves 7 minutes for the calls to GitHub.
     timeout-minutes: 30
     permissions:
       contents: write
