@@ -229,8 +229,8 @@ section "the fast path"
 answer "$R/pulls/12" '{"changed_files": 0, "head": {"ref": "empty-1.0.1", "repo": {"full_name": "owner/fakepkg"}}, "base": {"ref": "main"}}'
 out=$(run)
 has "it succeeds" "$out" "exit 0"
-is "it bumps the default branch, comments and closes the checklist pull request" "$(order)" \
-  "POST $R/git/tags|POST $R/git/refs|PATCH $R/releases/7|POST $R/git/blobs|POST $R/git/blobs|POST $R/git/trees|POST $R/git/commits|PATCH $R/git/refs/heads/main|POST $R/issues/12/comments|PATCH $R/pulls/12"
+is "it bumps the default branch, closes the checklist pull request and then comments" "$(order)" \
+  "POST $R/git/tags|POST $R/git/refs|PATCH $R/releases/7|POST $R/git/blobs|POST $R/git/blobs|POST $R/git/trees|POST $R/git/commits|PATCH $R/git/refs/heads/main|PATCH $R/pulls/12|POST $R/issues/12/comments"
 has "the bump's parent is the default branch's head" "$(cat "$SCRATCH/writes")" "parents[]=$MAIN"
 has "the pull request is closed" "$(cat "$SCRATCH/writes")" "PATCH $R/pulls/12
   state=closed"
@@ -291,7 +291,26 @@ p3m_lists 1.0.2
 out=$(run --dry-run)
 has "an older draft still finishes" "$out" "exit 0"
 has "saying so" "$(cat "$SUMMARY")" "P3M lists fakepkg 1.0.2, later than 1.0.1"
-has "and it would publish" "$(cat "$SUMMARY")" "Would publish the draft"
+has "and it would publish it, not as the latest" "$(cat "$SUMMARY")" "Would publish the draft, not as the latest release, since P3M lists fakepkg 1.0.2."
+out=$(run)
+has "a real run publishes it, not as the latest" "$(cat "$SCRATCH/writes")" "PATCH $R/releases/7
+  draft=false
+  make_latest=false"
+p3m_lists 1.0-2
+out=$(run --dry-run)
+has "\`-\` and \`.\` compare alike" "$(cat "$SUMMARY")" "P3M lists fakepkg 1.0-2, later than 1.0.1"
+p3m_lists 1.0.1.1
+out=$(run --dry-run)
+has "a longer version is later" "$(cat "$SUMMARY")" "P3M lists fakepkg 1.0.1.1, later than 1.0.1"
+p3m_lists 1.0.0.9
+out=$(run --dry-run)
+has "a longer but earlier version is not" "$(cat "$SUMMARY")" "fakepkg 1.0.1 is not on P3M yet"
+p3m_lists 1.0.10
+answer "$R/releases?per_page=100" "[$(draft 7 v1.0.1 fakepkg_1.0.1.tar.gz "sha256:$DSHA"), $(draft 8 v1.0.9 fakepkg_1.0.9.tar.gz '')]"
+out=$(run --dry-run)
+has "components compare as numbers" "$(cat "$SUMMARY")" "P3M lists fakepkg 1.0.10, later than 1.0.1"
+has "and one accepted release is finished per run" "$(cat "$SUMMARY")" "fakepkg 1.0.9 is on P3M, and is left for the next run"
+answer "$R/releases?per_page=100" "[$(draft 7 v1.0.1 fakepkg_1.0.1.tar.gz "sha256:$DSHA")]"
 p3m_lists 1.0.1
 
 section "a release branch that does not reach the released commit"
@@ -335,7 +354,7 @@ answer_fail "$R/pulls?state=open&per_page=100" ""
 
 published() { # <id> <tag>
   printf '{"id": %s, "tag_name": "%s", "draft": false, "target_commitish": "%s", "html_url": "https://github.example/owner/fakepkg/releases/%s", "body": "- Fix.\\n\\n<!-- cran-submission: fakepkg %s -->", "assets": []}' \
-    "$1" "$2" "$SHA" "$1" "${2#v}"
+    "$1" "$2" "$SHA" "$1" "${2#v}" | sed "s/\"assets\": \[\]/\"assets\": [{\"id\": 70, \"name\": \"fakepkg_1.0.1.tar.gz\", \"digest\": \"sha256:$DSHA\"}]/"
 }
 answer "$R/releases?per_page=100" "[$(published 7 v1.0.1)]"
 answer "$R/git/matching-refs/tags/v1.0.1" '[{"ref": "refs/tags/v1.0.1"}]'
@@ -355,9 +374,34 @@ answer "$R/contents/DESCRIPTION?ref=$HEAD" "{\"content\": \"$(b64 $'Package: fak
 answer "$R/contents/NEWS.md?ref=$HEAD" "{\"content\": \"$(b64 $'# fakepkg (development version)\n\nChanges since v1.0.1: <x>\n\n'"$NEWS_REL")\"}"
 out=$(run)
 has "it succeeds" "$out" "exit 0"
-is "it only merges the pull request and comments" "$(order)" "POST $R/merges|PUT $R/pulls/12/merge|POST $R/issues/12/comments"
+is "it only merges the pull request and comments" "$(order)" "PUT $R/pulls/12/merge|POST $R/issues/12/comments"
+has "without merging the default branch again" "$(cat "$SCRATCH/writes")" "so \`main\` is not merged into it again"
 has "at the branch's head" "$(cat "$SCRATCH/writes")" "sha=$HEAD"
 has "saying what was done before" "$(cat "$SCRATCH/writes")" "\`release-1.0.1\` carries the development bump already"
+
+answer "$R/contents/DESCRIPTION?ref=$HEAD" "{\"content\": \"$DESC_REL\"}"
+answer "$R/contents/NEWS.md?ref=$HEAD" "{\"content\": \"$(b64 "$NEWS_REL")\"}"
+
+section "a release published by hand before CRAN accepted it"
+p3m_lists 1.0.0
+out=$(run)
+has "the run stays green" "$out" "exit 0"
+has "it warns" "$out" "::warning title=Published before CRAN lists it::"
+is "it writes nothing" "$(cat "$SCRATCH/writes")" ""
+p3m_lists 1.0.1
+
+section "a published release after a resubmission moved the branch on"
+cran_tarball 'f <- function() 2'
+out=$(run)
+has "it fails" "$out" "::error title=CRAN's tarball differs from the release's::"
+is "it merges and bumps nothing" "$(order)" "POST $R/issues/12/comments"
+has "the comment says the release is not finished" "$(cat "$SCRATCH/writes")" "so the release is not finished"
+cran_tarball 'f <- function() 1'
+answer "$R/contents/DESCRIPTION?ref=$SHA" "{\"content\": \"$(b64 $'Package: fakepkg\nVersion: 1.0.0\n')\"}"
+out=$(run)
+has "a target that carries another version fails too" "$out" "::error title=The release's target is not fakepkg 1.0.1::"
+is "and merges nothing" "$(order)" "POST $R/issues/12/comments"
+answer "$R/contents/DESCRIPTION?ref=$SHA" "{\"content\": \"$DESC_REL\"}"
 
 section "a published release whose tag is elsewhere"
 answer "$R/commits/refs/tags/v1.0.1" "{\"sha\": \"$HEAD\"}"

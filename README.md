@@ -369,11 +369,12 @@ What a run does:
   which an earlier run left unfinished.
   It stops when there is none, and fails before writing anything when the releases, the open pull requests
   or the repository's default branch cannot be read.
-- For the drafts, it reads the source index of Posit's package manager,
+- It reads the source index of Posit's package manager,
   `https://packagemanager.posit.co/cran/latest/src/contrib/PACKAGES.gz`, once.
   That is the test `fledge:::release_after_cran_built_binaries()` made, and a listing there also means the binaries are on their way.
   A version the index does not list yet is a line in the run's summary, and the run stays green.
   A later version in the index counts too, so that a draft left behind by a missed run still finishes.
+  A run finishes at most one accepted release, and leaves any other for the next run, so that it fits the job's timeout.
 - For a draft whose version the index lists, it takes these steps in order, and stops at the first that fails:
   - **compare**: it checks that the draft's target is a full commit SHA, as the submission writes it,
     and that `DESCRIPTION` there carries the package and the version.
@@ -388,11 +389,12 @@ What a run does:
   - **tag**: it writes the annotated tag `vX.Y.Z` on the draft's target,
     with `<package> X.Y.Z`, a blank line and the version's `NEWS.md` section at that commit as its message.
     A tag that exists on the target already is kept; one on another commit fails the run, since a tag is never moved.
-  - **publish**: it publishes the draft as the latest release, which is what says that the version is on CRAN.
+  - **publish**: it publishes the draft, which is what says that the version is on CRAN,
+    as the latest release when the index lists this version, and below the latest when it lists a later one.
   - **finish**: it finds the checklist pull request as the submission does.
     One that changes no file is the fast path's empty checklist pull request; any other is the release pull request.
     - On the default path it checks that the release branch, the pull request's head, reaches the released commit,
-      merges the default branch into the release branch, commits the development bump on it,
+      merges the default branch into the release branch unless the branch carries the bump already, commits the development bump on it,
       and merges the release pull request with a merge commit, at the commit it just wrote.
     - On the fast path it checks that the default branch reaches the released commit,
       commits the development bump to the default branch, and closes the empty checklist pull request.
@@ -402,8 +404,10 @@ What a run does:
       a merge or a push that the default branch's protection refuses;
       and a release pull request from another repository or into another branch.
       On the fast path the empty checklist pull request then stays open until the bump lands.
-- For a published release whose checklist pull request is open, it checks that the tag is on the release's target,
-  and takes the **finish** step alone.
+- For a published release whose checklist pull request is open, it requires the index to list the version or a later one,
+  and warns and writes nothing otherwise, as for a release published by hand too early.
+  It then takes the **compare** step again against the release's asset, which catches a resubmission that moved the branch on,
+  checks that the tag is on the release's target, and takes the **finish** step.
 - For each accepted version it keeps one comment on the checklist pull request, marked `<!-- release-status: <package> X.Y.Z -->`:
   what it checked and wrote, and what is left, with the commands that do it.
   Without a checklist pull request it tags and publishes, warns, and leaves the rest to the maintainer.
@@ -417,7 +421,7 @@ The bump checks that the branch it writes to carries the released version, or it
 A dry run holds the same token, because only a token that can write sees draft releases, and writes nothing:
 its summary shows what a real run would tag, publish, commit, merge and close, and the comment it would write.
 The run checks out nothing and runs none of the package's code.
-Its downloads are bounded so that one accepted draft fits well within the job's 30 minutes,
+Its downloads are bounded so that one accepted release fits well within the job's 30 minutes,
 and one run per repository runs at a time, never cancelled.
 The calling job grants `contents: write` to tag, publish and commit, and `pull-requests: write` to merge, close and comment.
 

@@ -6,9 +6,10 @@
 #     Lists the releases whose notes carry the submission marker `<!-- cran-submission: <package> <version> -->`
 #     and whose tag name is `v<version>`: every draft, and every published one whose checklist pull request is still open,
 #     a release whose finish (step 4) did not complete. It does nothing when there is none.
-#     For a draft, it reads the source index of Posit's package manager once, P3M_REPO_URL/src/contrib/PACKAGES.gz,
+#     It reads the source index of Posit's package manager once, P3M_REPO_URL/src/contrib/PACKAGES.gz,
 #     as `fledge:::release_after_cran_built_binaries()` did; a listing there also means the binaries are on their way.
-#     A version that index does not list yet, nor a newer one, is a line in the report, and success.
+#     A version that index does not list yet, nor a later one, is a line in the report, and success.
+#     A run finishes at most one release whose version is listed, and leaves the others for the next run.
 #     For a draft whose version is listed, in this order, stopping at the first step that fails:
 #       1. compare  checks that the draft's target is a full SHA whose DESCRIPTION carries the package and version,
 #                   then compares CRAN's tarball of the version, from CRAN_URL/src/contrib/ or its Archive/<package>/,
@@ -18,18 +19,20 @@
 #       2. tag      writes the annotated tag `v<version>` on the draft's target, with `<package> <version>`,
 #                   a blank line and the version's NEWS.md section at that commit as its message;
 #                   a tag that exists on the target is kept, and one on another commit fails.
-#       3. publish  publishes the draft, by its ID, as the latest release.
+#       3. publish  publishes the draft, by its ID, as the latest release when P3M lists this version,
+#                   and not as the latest when it lists a later one.
 #       4. finish   finds the checklist pull request as `release-report.sh find` does, and tells the paths apart by it:
 #                   a pull request that changes no file is the fast path's empty checklist pull request.
 #                   Default path: checks that the release branch, the pull request's head, reaches the target,
-#                   merges the default branch into it, commits the development bump on it (dev-bump.sh),
+#                   merges the default branch into it unless it carries the bump, commits the development bump on it (dev-bump.sh),
 #                   and merges the pull request with a merge commit, at the head it just wrote.
 #                   Fast path: checks that the default branch reaches the target, commits the development bump there,
 #                   and closes the empty checklist pull request.
 #                   A write it cannot make, such as a merge that conflicts, as a hotfix's does, or a protected branch,
 #                   is handed over: the comment says what is left, with the commands, and the run stays green.
 #                   Without a checklist pull request, the run warns and leaves step 4 to the maintainer.
-#     A published release with an open checklist pull request takes step 4 alone, once its tag is found on its target.
+#     A published release with an open checklist pull request whose version P3M lists takes step 1 against its asset,
+#     then step 4, once its tag is found on its target; one that P3M does not list yet warns, and nothing is written.
 #     Each accepted version gets one comment on its checklist pull request, `<!-- release-status: <package> <version> -->`,
 #     created or updated in place, which says what was done and what is left; a version not listed yet gets none.
 #     Every step takes what an earlier run did as done: a tag on the target, a published release,
@@ -217,19 +220,17 @@ default_branch=$("$gh" api "repos/$repo" --jq .default_branch 2>"$work/gh.err") 
 
 # --- P3M --------------------------------------------------------------------
 
-if grep -q '^draft' "$work/matching"; then
-  group "P3M: the source index of $p3m"
-  val "index" "$index_url"
-  if ! curl --fail --silent --show-error --location --retry 2 --connect-timeout 30 --max-time 120 \
-    --output "$work/PACKAGES.gz" "$index_url" 2>"$work/curl.err" ||
-    ! gzip -dc "$work/PACKAGES.gz" >"$work/PACKAGES" 2>>"$work/curl.err"; then
-    fail "P3M" "P3M cannot be read" "Reading $index_url failed: $(head -n 1 "$work/curl.err")" "$work/curl.err" -- \
-      "Check that $index_url answers, for instance with \`curl -sSI $index_url\`." \
-      "Nothing was written; the next scheduled run tries again, or dispatch the workflow once P3M answers."
-  fi
-  val "packages" "$(grep -c '^Package:' "$work/PACKAGES" || true)"
-  endgroup
+group "P3M: the source index of $p3m"
+val "index" "$index_url"
+if ! curl --fail --silent --show-error --location --retry 2 --connect-timeout 30 --max-time 120 \
+  --output "$work/PACKAGES.gz" "$index_url" 2>"$work/curl.err" ||
+  ! gzip -dc "$work/PACKAGES.gz" >"$work/PACKAGES" 2>>"$work/curl.err"; then
+  fail "P3M" "P3M cannot be read" "Reading $index_url failed: $(head -n 1 "$work/curl.err")" "$work/curl.err" -- \
+    "Check that $index_url answers, for instance with \`curl -sSI $index_url\`." \
+    "Nothing was written; the next scheduled run tries again, or dispatch the workflow once P3M answers."
 fi
+val "packages" "$(grep -c '^Package:' "$work/PACKAGES" || true)"
+endgroup
 
 # The version the index lists for a package, empty when it lists none.
 p3m_version() { # <package>
@@ -239,10 +240,46 @@ p3m_version() { # <package>
     this && /^Version:/ { print $2; exit }' "$work/PACKAGES"
 }
 
-# Exit 0 when version <a> is later than <b>, comparing their components as numbers, as R does.
+# Exit 0 when version <a> is later than <b>, as R's package_version() orders them:
+# components split at `.` or `-` and compared as numbers, and of two versions equal up to the shorter one's end, the longer is later.
 version_gt() { # <a> <b>
-  [ "$1" != "$2" ] || return 1
-  [ "$(printf '%s\n%s\n' "${1//-/.}" "${2//-/.}" | sort -t . -k 1,1n -k 2,2n -k 3,3n -k 4,4n | tail -n 1)" = "${1//-/.}" ]
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, /[.-]/); nb = split(b, y, /[.-]/)
+    for (i = 1; i <= na && i <= nb; i++) {
+      if (x[i] + 0 > y[i] + 0) exit 0
+      if (x[i] + 0 < y[i] + 0) exit 1
+    }
+    exit !(na > nb)
+  }'
+}
+
+# At most one accepted release is finished per run, so that a run fits its job's timeout; the next run takes the next one.
+budget=1
+
+# Sets `served` to the version P3M lists for <package>, and exit 0 when that is <version> or a later one,
+# which means CRAN accepted <version>, and this run has not finished another release yet.
+# Otherwise it reports the version as not on P3M yet, or left for the next run, and exits 1.
+accepted() { # <package> <version>
+  served=$(p3m_version "$1")
+  val "P3M lists" "${served:-(not listed)}"
+  if [ "$served" != "$2" ] && { [ -z "$served" ] || ! version_gt "$served" "$2"; }; then
+    endgroup
+    say "$1 $2 is not on P3M yet: $index_url lists ${served:+$1 $served}${served:-no $1}."
+    summary "- $1 $2 is not on P3M yet: $index_url lists ${served:+$1 $served}${served:-no $1}." ""
+    return 1
+  fi
+  if [ "$budget" -eq 0 ]; then
+    endgroup
+    say "$1 $2 is on P3M, and is left for the next run, which finishes one release at a time."
+    summary "- $1 $2 is on P3M, and is left for the next run, which finishes one release at a time." ""
+    return 1
+  fi
+  budget=0
+  if [ "$served" = "$2" ]; then
+    did "P3M lists $1 $2, so CRAN has accepted it."
+  else
+    did "P3M lists $1 $served, later than $2, so CRAN published $2 before, if it accepted it: its tarball must be in CRAN's archive."
+  fi
 }
 
 # --- GitHub helpers ---------------------------------------------------------
@@ -456,13 +493,15 @@ git push origin $qbranch"
       report "$pr" "(dry run)"
       return 0
     fi
-    did "Closed the empty checklist pull request #$pr. A push with the workflow's token starts no workflows on \`$default_branch\`; they run at its next push."
-    report "$pr" "✅"
     if ! "$gh" api -X PATCH "repos/$repo/pulls/$pr" -f state=closed --jq .state >/dev/null 2>"$work/gh.err"; then
       failure "$title" "The checklist pull request could not be closed" "Closing #$pr failed: $(first_err)." "$work/gh.err" -- \
         "Dispatch the workflow again, or close #$pr by hand; the bump is on \`$default_branch\`."
+      handover "closing #$pr failed ($(first_err)); the next run closes it, or close it by hand." ""
+      report "$pr" "⚠️"
       return 1
     fi
+    did "Closed the empty checklist pull request #$pr. A push with the workflow's token starts no workflows on \`$default_branch\`; they run at its next push."
+    report "$pr" "✅"
     endgroup
     notice "Released" "$title is tagged, published and bumped on $default_branch; #$pr is closed."
     return 0
@@ -492,7 +531,15 @@ gh pr merge $pr --merge"
     report "$pr" "⚠️"
     return 0
   fi
-  if dry; then
+  local bumped_already='' hsha
+  if hsha=$("$gh" api "repos/$repo/git/ref/heads/$head" --jq .object.sha 2>>"$work/gh.err") &&
+    file_at DESCRIPTION "$hsha" "$work/head-DESCRIPTION" &&
+    [ "$(dcf_field Version "$work/head-DESCRIPTION")" = "$version.9000" ]; then
+    bumped_already=1
+  fi
+  if [ -n "$bumped_already" ]; then
+    did "\`$head\` carries the development bump already, so \`$default_branch\` is not merged into it again."
+  elif dry; then
     did "Would merge \`$default_branch\` into \`$head\`."
   else
     if ! merged=$("$gh" api -X POST "repos/$repo/merges" -f "base=$head" -f "head=$default_branch" \
@@ -545,13 +592,106 @@ gh pr merge $pr --merge"
   report "$pr" "✅"
 }
 
+# Step 1 for a draft, and again for a published release before its finish: the target is a full SHA
+# whose DESCRIPTION carries the version, and CRAN's tarball matches the release's asset, but for what CRAN writes.
+# <kind> is `draft` or `release`. Stops the version with a failure, reported on <pr>, and exit 1 otherwise; sets `sha`.
+check_release() { # <kind> <package> <version> <target> <url> <asset id> <digest> <pr>
+  local kind=$1 pkg=$2 version=$3 target=$4 url=$5 aid=$6 digest=$7 pr=$8 nothing refused rc
+  local base="${pkg}_${version}.tar.gz" dir=$work/$pkg-$version
+  mkdir -p "$dir/cran" "$dir/draft"
+  nothing="nothing was tagged or published"
+  refused="so the tag was refused"
+  if [ "$kind" != draft ]; then
+    nothing="nothing was merged or bumped"
+    refused="so the release is not finished"
+  fi
+  if ! valid_sha "$target"; then
+    STOP_DID="the $kind's target \`$target\` is no full commit SHA, so the submitted commit is unknown; $nothing." \
+      STOP_LEFT="set the $kind's target to the full SHA of the commit the accepted submission uploaded, recorded in its attempt comment; the next run finishes the release." \
+      stop "$pr" "The $kind's target is no commit" \
+      "$url targets \`$target\`, not the full SHA the submission writes, and a branch's head may have moved since; $nothing." -- \
+      "Set the $kind's target to the full SHA of the submitted commit, recorded in its attempt comment, then dispatch the workflow."
+    return 1
+  fi
+  if ! file_at DESCRIPTION "$target" "$dir/DESCRIPTION"; then
+    failure "$title" "DESCRIPTION cannot be read" "Reading DESCRIPTION at $target failed: $(first_err); $nothing." "$work/gh.err" -- \
+      "Dispatch the workflow again; the next scheduled run tries again in any case."
+    return 1
+  fi
+  if [ "$(dcf_field Package "$dir/DESCRIPTION")" != "$pkg" ] || [ "$(dcf_field Version "$dir/DESCRIPTION")" != "$version" ]; then
+    STOP_DID="DESCRIPTION at the $kind's target $(commit_link "$target") carries $(dcf_field Package "$dir/DESCRIPTION") $(dcf_field Version "$dir/DESCRIPTION"), not $title; $nothing." \
+      STOP_LEFT="set the $kind's target to the commit the accepted submission uploaded; the next run finishes the release." \
+      stop "$pr" "The $kind's target is not $title" \
+      "DESCRIPTION at $target carries $(dcf_field Package "$dir/DESCRIPTION") $(dcf_field Version "$dir/DESCRIPTION"); $nothing." -- \
+      "Set the $kind's target to the commit of the accepted submission, recorded in its attempt comment, then dispatch the workflow."
+    return 1
+  fi
+  if [ -z "$aid" ]; then
+    STOP_DID="the $kind carries no \`$base\`; $nothing." \
+      STOP_LEFT="attach the submitted tarball to the $kind; the next run compares it and finishes the release." \
+      stop "$pr" "The $kind has no tarball" \
+      "The $kind $url carries no asset \`$base\`, so what CRAN accepted cannot be checked; $nothing." -- \
+      "Attach the tarball the accepted submission uploaded, recorded in its attempt comment, to the $kind, then dispatch the workflow."
+    return 1
+  fi
+  if ! curl --fail --silent --show-error --location --retry 1 --connect-timeout 30 --max-time 120 \
+    --output "$dir/cran/$base" "$cran/src/contrib/$base" 2>"$work/curl.err" &&
+    ! curl --fail --silent --show-error --location --retry 1 --connect-timeout 30 --max-time 120 \
+      --output "$dir/cran/$base" "$cran/src/contrib/Archive/$pkg/$base" 2>>"$work/curl.err"; then
+    failure "$title" "CRAN's tarball cannot be read" \
+      "Neither $cran/src/contrib/$base nor its archive copy could be downloaded: $(tail -n 1 "$work/curl.err"); $nothing." "$work/curl.err" -- \
+      "CRAN's mirrors may lag behind P3M by a few hours: the next scheduled run tries again, or dispatch the workflow later." \
+      "Where P3M lists a later version and CRAN's archive has no $base, CRAN never published $version: delete its draft, as for an abandoned version."
+    return 1
+  fi
+  if ! timeout 300 "$gh" api "repos/$repo/releases/assets/$aid" -H 'Accept: application/octet-stream' >"$dir/draft/$base" 2>"$work/gh.err"; then
+    failure "$title" "The $kind's tarball cannot be read" \
+      "Downloading \`$base\` from $url failed: $(first_err); $nothing." "$work/gh.err" -- \
+      "Check that the calling job grants \`contents: write\`, then dispatch the workflow again."
+    return 1
+  fi
+  sha=$(sha256_of "$dir/draft/$base")
+  if [ -n "$digest" ] && [ "$digest" != "sha256:$sha" ]; then
+    failure "$title" "The $kind's tarball is not the one GitHub recorded" \
+      "GitHub records the digest \`$digest\` for \`$base\`, and the download's is \`sha256:$sha\`; $nothing." -- \
+      "Dispatch the workflow again; if it persists, compare the asset with the attempt comment's SHA-256."
+    return 1
+  fi
+  val "draft tarball" "$base, sha256 $sha"
+  val "CRAN tarball" "$base, sha256 $(sha256_of "$dir/cran/$base")"
+  rc=0
+  compare_tarballs "$dir/cran/$base" "$dir/draft/$base" "$dir/diff" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    failure "$title" "The tarballs cannot be compared" "Unpacking or comparing the two \`$base\` failed; $nothing." "$dir/diff" -- \
+      "Read the details; dispatch the workflow again once CRAN's and the $kind's tarballs can be read."
+    return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    STOP_DID="CRAN's \`$base\` differs from the $kind's asset (sha256 \`$sha\`) beyond what CRAN writes, $refused; $nothing. The run's summary shows the differences." \
+      STOP_LEFT="find the upload CRAN accepted, tag its commit, and make the $kind match it; the next run then finishes the release." \
+      stop "$pr" "CRAN's tarball differs from the $kind's" \
+      "CRAN publishes a $base that differs from the $kind's asset beyond the MD5 file and the fields CRAN adds to DESCRIPTION, so CRAN accepted another upload than the one the $kind records, $refused; $nothing." \
+      "$dir/diff" -- \
+      "Find the upload CRAN accepted: a confirmation link from an earlier attempt may have been followed. The attempt comments on the checklist pull request record each attempt's commit and SHA-256." \
+      "Tag the commit of the upload CRAN accepted by hand, attach that tarball to the $kind and set its target to that commit, then dispatch the workflow."
+    return 1
+  fi
+  did "CRAN's \`$base\` matches the $kind's asset (sha256 \`$sha\`), but for what CRAN writes."
+}
+
 # --- a published release whose checklist pull request is open ---------------
 
-resume() { # <tag> <package> <version> <target> <url>
-  local tag=$1 pkg=$2 version=$3 target=$4 url=$5 pr tagged
+resume() { # <tag> <package> <version> <target> <url> <asset id> <digest>
+  local tag=$1 pkg=$2 version=$3 target=$4 url=$5 aid=$6 digest=$7 pr tagged
   group "Release: $title, published"
   val "release" "$url"
-  summary "### $title" "" "- Release: [$title]($url), published, with its checklist pull request still open." ""
+  if ! accepted "$pkg" "$version"; then
+    [ "$budget" -eq 0 ] ||
+      warn "Published before CRAN lists it" \
+        "$url is published and its checklist pull request is open, but P3M does not list $title yet, so nothing is merged or bumped until it does."
+    return 0
+  fi
+  summary "### $title" "" "- Release: [$title]($url), published, with its checklist pull request still open." "- P3M lists $pkg $served." ""
   if ! pr=$(checklist_pr "$pkg" "$version"); then
     failure "$title" "The checklist pull request cannot be found" "Reading the open pull requests failed: $(first_err)." "$work/gh.err" -- \
       "Dispatch the workflow again; the next scheduled run tries again in any case."
@@ -564,13 +704,7 @@ resume() { # <tag> <package> <version> <target> <url>
     return 0
   }
   did "[$title]($url) is published already, and its checklist pull request is still open, so this run finishes it."
-  if ! valid_sha "$target"; then
-    STOP_DID="the release's target \`$target\` is no full commit SHA, so the released commit is unknown." \
-      STOP_LEFT="finish the release by hand: merge it into \`$default_branch\` with the development bump, or close #$pr on the fast path." \
-      stop "$pr" "The release's target is no commit" "$url targets \`$target\`, not a full commit SHA; nothing was written." -- \
-      "Finish the release by hand, or set the release's target to the commit CRAN accepted and dispatch the workflow again."
-    return 1
-  fi
+  check_release release "$pkg" "$version" "$target" "$url" "$aid" "$digest" "$pr" || return 1
   if ! tagged=$(tag_commit "$tag" 2>"$work/gh.err"); then
     failure "$title" "The tag cannot be read" "Reading the tag $tag failed: $(first_err)." "$work/gh.err" -- \
       "Dispatch the workflow again; nothing was written."
@@ -592,27 +726,15 @@ resume() { # <tag> <package> <version> <target> <url>
 
 process() { # <tag> <package> <version> <target> <url> <id> <asset id> <digest>
   local tag=$1 pkg=$2 version=$3 target=$4 url=$5 id=$6 aid=$7 digest=$8
-  local base="${pkg}_${version}.tar.gz" pr sha tagged tagsha msg served rc dir
+  local pr tagged tagsha msg latest dir
   dir=$work/$pkg-$version
-  mkdir -p "$dir/cran" "$dir/draft"
+  mkdir -p "$dir"
 
   group "Release: $title"
   val "draft" "$url, id $id"
   val "target" "$target"
-  served=$(p3m_version "$pkg")
-  val "P3M lists" "${served:-(not listed)}"
-  if [ "$served" = "$version" ]; then
-    summary "### $title" "" "- Draft release: [$title]($url), tag name \`$tag\`" "- P3M lists $pkg $served." ""
-    did "P3M lists $title, so CRAN has accepted it."
-  elif [ -n "$served" ] && version_gt "$served" "$version"; then
-    summary "### $title" "" "- Draft release: [$title]($url), tag name \`$tag\`" "- P3M lists $pkg $served, later than $version." ""
-    did "P3M lists $pkg $served, later than $version, so CRAN published $version before, if it accepted it: its tarball must be in CRAN's archive."
-  else
-    endgroup
-    say "$title is not on P3M yet: $index_url lists ${served:+$pkg $served}${served:-no $pkg}."
-    summary "- $title is not on P3M yet: $index_url lists ${served:+$pkg $served}${served:-no $pkg}." ""
-    return 0
-  fi
+  accepted "$pkg" "$version" || return 0
+  summary "### $title" "" "- Draft release: [$title]($url), tag name \`$tag\`" "- P3M lists $pkg $served." ""
 
   if ! pr=$(checklist_pr "$pkg" "$version"); then
     failure "$title" "The checklist pull request cannot be found" "Reading the open pull requests failed: $(first_err); nothing was written." "$work/gh.err" -- \
@@ -631,78 +753,7 @@ process() { # <tag> <package> <version> <target> <url> <id> <asset id> <digest>
       "The next scheduled run then finishes the release, or dispatch the workflow."
     return 1
   fi
-  if ! valid_sha "$target"; then
-    STOP_DID="the draft's target \`$target\` is no full commit SHA, so the submitted commit is unknown; nothing was tagged or published." \
-      STOP_LEFT="set the draft's target to the full SHA of the commit the accepted submission uploaded, recorded in its attempt comment; the next run finishes the release." \
-      stop "$pr" "The draft's target is no commit" \
-      "$url targets \`$target\`, not the full SHA the submission writes, and a branch's head may have moved since; nothing was tagged or published." -- \
-      "Set the draft's target to the full SHA of the submitted commit, recorded in its attempt comment, then dispatch the workflow."
-    return 1
-  fi
-  if ! file_at DESCRIPTION "$target" "$dir/DESCRIPTION"; then
-    failure "$title" "DESCRIPTION cannot be read" "Reading DESCRIPTION at $target failed: $(first_err); nothing was tagged or published." "$work/gh.err" -- \
-      "Dispatch the workflow again; the next scheduled run tries again in any case."
-    return 1
-  fi
-  if [ "$(dcf_field Package "$dir/DESCRIPTION")" != "$pkg" ] || [ "$(dcf_field Version "$dir/DESCRIPTION")" != "$version" ]; then
-    STOP_DID="DESCRIPTION at the draft's target $(commit_link "$target") carries $(dcf_field Package "$dir/DESCRIPTION") $(dcf_field Version "$dir/DESCRIPTION"), not $title; nothing was tagged or published." \
-      STOP_LEFT="set the draft's target to the commit the accepted submission uploaded; the next run finishes the release." \
-      stop "$pr" "The draft's target is not $title" \
-      "DESCRIPTION at $target carries $(dcf_field Package "$dir/DESCRIPTION") $(dcf_field Version "$dir/DESCRIPTION"); nothing was tagged or published." -- \
-      "Set the draft's target to the commit of the accepted submission, recorded in its attempt comment, then dispatch the workflow."
-    return 1
-  fi
-  if [ -z "$aid" ]; then
-    STOP_DID="the draft carries no \`$base\`; nothing was tagged or published." \
-      STOP_LEFT="attach the submitted tarball to the draft; the next run compares it and finishes the release." \
-      stop "$pr" "The draft has no tarball" \
-      "The draft release $url carries no asset \`$base\`, so what CRAN accepted cannot be checked; nothing was tagged or published." -- \
-      "Attach the tarball the accepted submission uploaded, recorded in its attempt comment, to the draft, then dispatch the workflow."
-    return 1
-  fi
-  if ! curl --fail --silent --show-error --location --retry 1 --connect-timeout 30 --max-time 120 \
-    --output "$dir/cran/$base" "$cran/src/contrib/$base" 2>"$work/curl.err" &&
-    ! curl --fail --silent --show-error --location --retry 1 --connect-timeout 30 --max-time 120 \
-      --output "$dir/cran/$base" "$cran/src/contrib/Archive/$pkg/$base" 2>>"$work/curl.err"; then
-    failure "$title" "CRAN's tarball cannot be read" \
-      "Neither $cran/src/contrib/$base nor its archive copy could be downloaded: $(tail -n 1 "$work/curl.err"); nothing was tagged or published." "$work/curl.err" -- \
-      "CRAN's mirrors may lag behind P3M by a few hours: the next scheduled run tries again, or dispatch the workflow later." \
-      "Where P3M lists a later version and CRAN's archive has no $base, CRAN never published $version: delete its draft, as for an abandoned version."
-    return 1
-  fi
-  if ! timeout 300 "$gh" api "repos/$repo/releases/assets/$aid" -H 'Accept: application/octet-stream' >"$dir/draft/$base" 2>"$work/gh.err"; then
-    failure "$title" "The draft's tarball cannot be read" \
-      "Downloading \`$base\` from $url failed: $(first_err); nothing was tagged or published." "$work/gh.err" -- \
-      "Check that the calling job grants \`contents: write\`, then dispatch the workflow again."
-    return 1
-  fi
-  sha=$(sha256_of "$dir/draft/$base")
-  if [ -n "$digest" ] && [ "$digest" != "sha256:$sha" ]; then
-    failure "$title" "The draft's tarball is not the one GitHub recorded" \
-      "GitHub records the digest \`$digest\` for \`$base\`, and the download's is \`sha256:$sha\`; nothing was tagged or published." -- \
-      "Dispatch the workflow again; if it persists, compare the asset with the attempt comment's SHA-256."
-    return 1
-  fi
-  val "draft tarball" "$base, sha256 $sha"
-  val "CRAN tarball" "$base, sha256 $(sha256_of "$dir/cran/$base")"
-  rc=0
-  compare_tarballs "$dir/cran/$base" "$dir/draft/$base" "$dir/diff" || rc=$?
-  if [ "$rc" -eq 2 ]; then
-    failure "$title" "The tarballs cannot be compared" "Unpacking or comparing the two \`$base\` failed; nothing was tagged or published." "$dir/diff" -- \
-      "Read the details; dispatch the workflow again once CRAN's and the draft's tarballs can be read."
-    return 1
-  fi
-  if [ "$rc" -ne 0 ]; then
-    STOP_DID="CRAN's \`$base\` differs from the draft's asset (sha256 \`$sha\`) beyond what CRAN writes, so the tag was refused; nothing was tagged or published. The run's summary shows the differences." \
-      STOP_LEFT="find the upload CRAN accepted, tag its commit, and make the draft match it; the next run then publishes the release." \
-      stop "$pr" "CRAN's tarball differs from the draft's" \
-      "CRAN publishes a $base that differs from the draft's asset beyond the MD5 file and the fields CRAN adds to DESCRIPTION, so CRAN accepted another upload than the one the draft records. The tag was refused; nothing was tagged or published." \
-      "$dir/diff" -- \
-      "Find the upload CRAN accepted: a confirmation link from an earlier attempt may have been followed. The attempt comments on the checklist pull request record each attempt's commit and SHA-256." \
-      "Tag the commit of the upload CRAN accepted by hand, attach that tarball to the draft and set its target to that commit, then dispatch the workflow."
-    return 1
-  fi
-  did "CRAN's \`$base\` matches the draft's asset (sha256 \`$sha\`), but for what CRAN writes."
+  check_release draft "$pkg" "$version" "$target" "$url" "$aid" "$digest" "$pr" || return 1
 
   # 2. tag
   if ! tagged=$(tag_commit "$tag" 2>"$work/gh.err"); then
@@ -754,16 +805,27 @@ git push origin $tag"
 
   # 3. publish
   if dry; then
-    did "Would publish the draft as the latest release."
+    if [ "$served" = "$version" ]; then
+      did "Would publish the draft as the latest release."
+    else
+      did "Would publish the draft, not as the latest release, since P3M lists $pkg $served."
+    fi
   else
-    if ! "$gh" api -X PATCH "repos/$repo/releases/$id" -F draft=false -f make_latest=true --jq .html_url >/dev/null 2>"$work/gh.err"; then
+    # Only the version P3M lists is the latest; an older one finished after it is published below it.
+    latest=false
+    [ "$served" != "$version" ] || latest=true
+    if ! "$gh" api -X PATCH "repos/$repo/releases/$id" -F draft=false -f "make_latest=$latest" --jq .html_url >/dev/null 2>"$work/gh.err"; then
       STOP_DID="publishing the draft failed; the tag stays, and the next run publishes it." \
         STOP_LEFT="dispatch the workflow again once the token can publish releases." \
         stop "$pr" "The release could not be published" "Publishing $url failed: $(first_err)." "$work/gh.err" -- \
         "Check that the calling job grants \`contents: write\`, then dispatch the workflow again; the tag stays."
       return 1
     fi
-    did "Published [$title]($url) as the latest release."
+    if [ "$latest" = true ]; then
+      did "Published [$title]($url) as the latest release."
+    else
+      did "Published [$title]($url), not as the latest release, since P3M lists $pkg $served."
+    fi
     printf '%s\n' "$title" >>"$work/published"
   fi
 
@@ -782,7 +844,7 @@ while IFS=$'\t' read -r state tag pkg version target url id aid digest <&3; do
   if [ "$state" = draft ]; then
     process "$tag" "$pkg" "$version" "$target" "$url" "$id" "$aid" "$digest" || failed=1
   else
-    resume "$tag" "$pkg" "$version" "$target" "$url" || failed=1
+    resume "$tag" "$pkg" "$version" "$target" "$url" "$aid" "$digest" || failed=1
   fi
 done 3<"$work/matching"
 
