@@ -28,6 +28,10 @@
 #     in line with the submission, to be run by hand from a clone with push access to the parent,
 #     where the remote `upstream` is the parent and `origin` the fork. Outside a fork it prints nothing.
 #     The commands go to the log and to the step summary; nothing here runs them.
+#   gate <pr> <package> <version>
+#     The release gate's one comment, found by `<!-- release-report: release-gate -->` among github-actions[bot]'s comments,
+#     created or updated in place: the verdict from the gate's job results in RESULTS, the hard checks' report in GATE_HARD,
+#     and the report of the checks that are not enforced in GATE_REPORT, each cut to fit GitHub's limit on a comment.
 #
 # Environment:
 #   GH_TOKEN, GH_REPO    a token with `pull-requests: write` (`read` for `find`), and the repository, owner/name
@@ -38,6 +42,8 @@
 #   DETAILS              `status`: Markdown appended below the job results, may be empty
 #   DRAFT_URL            `attempt`: the draft release
 #   DRY_RUN              `sync`: `true` says the commands apply after a real run
+#   GATE_HARD, GATE_REPORT
+#                        `gate`: the Markdown reports of the release gate's hard and reported checks, may be empty
 #   GITHUB_SERVER_URL, GITHUB_RUN_ID, GITHUB_RUN_NUMBER, GITHUB_RUN_ATTEMPT, GITHUB_REF_NAME, GITHUB_EVENT_NAME
 #                        the run that is reported
 #   GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, GITHUB_ACTIONS
@@ -372,11 +378,96 @@ EOF
     '```sh' "$(cat "$block")" '```' ""
 }
 
+# --- gate: the release gate's comment ---------------------------------------
+
+# At most <bytes> bytes of a Markdown report, cut at a line, with a note where it was cut.
+gate_cut() { # <file> <bytes>
+  if [ "$(wc -c <"$1")" -le "$2" ]; then
+    cat "$1"
+    return 0
+  fi
+  # A fence or a collapsed block left open by the cut is closed, so that the rest of the comment renders.
+  head -c "$2" "$1" | sed '$d' | awk '
+    { print }
+    /^````/ { fence = !fence }
+    /^<details>/ { open++ }
+    /^<\/details>/ { open-- }
+    END {
+      if (fence) print "````"
+      print ""
+      print "[Cut to fit a comment: the run'"'"'s summary page has the rest.]"
+      for (; open > 0; open--) { print ""; print "</details>" }
+    }'
+}
+
+cmd_gate() {
+  [ $# -eq 3 ] || usage
+  local pr=$1 pkg=$2 version=$3
+  { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version"; } || usage
+  local marker="<!-- release-report: release-gate -->" job result hard='' checks='' verdict body tmp errf id
+  while IFS='=' read -r job result; do
+    case "$job" in
+      hard) hard=$result ;;
+      checks) checks=$result ;;
+    esac
+  done <<<"${RESULTS:-}"
+  case "$hard" in
+    success) verdict="✅ Release gate: $pkg $version is ready" ;;
+    failure) verdict="❌ Release gate: $pkg $version is not ready" ;;
+    *) verdict="⚠️ Release gate: $pkg $version was not checked (${hard:-no result})" ;;
+  esac
+  body=$(mktemp)
+  tmp=$(mktemp)
+  errf=$(mktemp)
+  # shellcheck disable=SC2064  # expand now
+  trap "rm -f '$body' '$tmp' '$errf'" EXIT
+  {
+    echo "$marker"
+    echo "### $verdict"
+    echo
+    # shellcheck disable=SC2016  # Markdown backticks
+    printf 'Run [#%s](%s) (attempt %s, %s) on `%s`, %s.\n' "${GITHUB_RUN_NUMBER:-0}" "$(run_url)" \
+      "${GITHUB_RUN_ATTEMPT:-1}" "${GITHUB_EVENT_NAME:-}" "${GITHUB_REF_NAME:-}" "$(date -u '+%Y-%m-%d %H:%M UTC')"
+    echo
+    echo "#### Required"
+    echo
+    printf '%s\n' "${GATE_HARD:-}" >"$tmp"
+    if [ -n "${GATE_HARD:-}" ]; then gate_cut "$tmp" 20000; else echo "The hard checks wrote no report; the run's log says why."; fi
+    echo
+    echo "#### Reported, not enforced"
+    echo
+    printf '%s\n' "${GATE_REPORT:-}" >"$tmp"
+    if [ -n "${GATE_REPORT:-}" ]; then
+      gate_cut "$tmp" 40000
+    else
+      echo "These checks wrote no report (\`checks\`: ${checks:-no result}); the run's log says why."
+    fi
+    echo
+    echo "The run's summary page has the details. Later runs of the release gate update this comment."
+  } >"$body"
+  id=$(bot_comments "$pr" "$marker" 2>"$errf") ||
+    fail "Report" "The checklist pull request's comments cannot be read" \
+      "Reading the comments of #$pr failed: $(head -n 1 "$errf"). The run's summary page has the results." -- \
+      "Check that the calling job grants \`pull-requests: write\`; the gate's results stand, and the next run updates the comment."
+  id=$(printf '%s\n' "$id" | tail -n 1)
+  local how=Posted
+  if [ -n "$id" ]; then
+    how=Updated
+    "$gh" api -X PATCH "repos/$repo/issues/comments/$id" -F "body=@$body" --jq .html_url 2>"$errf"
+  else
+    "$gh" api -X POST "repos/$repo/issues/$pr/comments" -F "body=@$body" --jq .html_url 2>"$errf"
+  fi || fail "Report" "The release gate's comment cannot be written" \
+    "Writing the comment on #$pr failed: $(head -n 1 "$errf"). The run's summary page has the results." -- \
+    "Check that the calling job grants \`pull-requests: write\`; the gate's results stand, and the next run updates the comment."
+  say "$how the release gate's comment on #$pr."
+}
+
 case "${1:-}" in
   find) shift; cmd_find "$@" ;;
   submitted) shift; cmd_submitted "$@" ;;
   status) shift; cmd_status "$@" ;;
   attempt) shift; cmd_attempt "$@" ;;
   sync) shift; cmd_sync "$@" ;;
+  gate) shift; cmd_gate "$@" ;;
   *) usage ;;
 esac

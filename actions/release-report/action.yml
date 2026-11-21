@@ -6,25 +6,26 @@ description: >
   keeps the workflow's one comment there, updated in place (mode `status`),
   or records a submission attempt in a new comment (mode `attempt`),
   or, in a fork, prints the commands that bring the parent repository in line by hand (mode `sync`),
+  or keeps the release gate's one comment there, updated in place (mode `gate`),
   with release-report.sh beside this file.
   The job needs `pull-requests: read` for `find` and `submitted`, only the repository's metadata, which every token can read,
   for `sync`, and `pull-requests: write` otherwise.
 
 inputs:
   mode:
-    description: "`find`, `submitted`, `status`, `attempt` or `sync`"
+    description: "`find`, `submitted`, `status`, `attempt`, `sync` or `gate`"
     required: true
   token:
     description: "A token with the permission the mode needs"
     required: true
   pr:
-    description: "`submitted`, `status`, `attempt`, `sync`: the checklist pull request's number"
+    description: "`submitted`, `status`, `attempt`, `sync`, `gate`: the checklist pull request's number"
     default: ""
   package:
-    description: "`find`, `submitted`, `attempt`, `sync`: the package name"
+    description: "`find`, `submitted`, `attempt`, `sync`, `gate`: the package name"
     default: ""
   version:
-    description: "`find`, `submitted`, `attempt`, `sync`: the release version"
+    description: "`find`, `submitted`, `attempt`, `sync`, `gate`: the release version"
     default: ""
   require:
     description: "`find`: `true` fails without exactly one checklist pull request"
@@ -36,7 +37,7 @@ inputs:
     description: "`status`: the comment's heading"
     default: ""
   results:
-    description: "`status`: one `<job>=<result>` per line"
+    description: "`status`, `gate`: one `<job>=<result>` per line"
     default: ""
   details:
     description: "`status`: Markdown appended below the job results"
@@ -63,6 +64,12 @@ inputs:
     default: ""
   branch:
     description: "`sync`: the branch the submission was dispatched on"
+    default: ""
+  gate-hard:
+    description: "`gate`: the Markdown report of the release gate's hard checks"
+    default: ""
+  gate-report:
+    description: "`gate`: the Markdown report of the release gate's checks that are not enforced"
     default: ""
 
 outputs:
@@ -93,6 +100,8 @@ runs:
         RESUBMIT: ${{ inputs.resubmit }}
         DRY_RUN: ${{ inputs.dry-run }}
         BRANCH: ${{ inputs.branch }}
+        GATE_HARD: ${{ inputs.gate-hard }}
+        GATE_REPORT: ${{ inputs.gate-report }}
       run: |
         script="$GITHUB_ACTION_PATH/release-report.sh"
         case "$MODE" in
@@ -101,6 +110,7 @@ runs:
           status) "$script" status "$PR" "$KEY" "$TITLE" ;;
           attempt) "$script" attempt "$PR" "$PACKAGE" "$VERSION" "$SHA" "$SHA256" "$TARBALL_NAME" ;;
           sync) "$script" sync "$PACKAGE" "$VERSION" "$SHA" "$BRANCH" "$PR" ;;
+          gate) "$script" gate "$PR" "$PACKAGE" "$VERSION" ;;
           *) echo "::error::Unknown mode: $MODE"; exit 2 ;;
         esac
       shell: bash

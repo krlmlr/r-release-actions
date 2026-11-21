@@ -4,7 +4,7 @@ Reusable GitHub workflows and composite actions that take an R package through a
 A package's own workflows call them by a pinned release.
 
 **Status: under construction.**
-The CRAN submission is the first workflow; the check that builds the tarball it submits, the release gate,
+The CRAN submission and the release gate are the first workflows; the check that builds the tarball the submission uploads,
 win-builder and the workflow that publishes a release after acceptance follow.
 Nothing here is released yet.
 
@@ -170,6 +170,98 @@ Each step writes what it read, checked and did to the run's summary, with how to
 - **The permissions** the calling job grants: `actions: read` to find and download the artifact,
   `contents: write` to draft the release, and `pull-requests: write` to report.
   The run needs no secret beyond the workflow's own token.
+
+## Release gate
+
+[`.github/workflows/release-gate.yaml`](.github/workflows/release-gate.yaml) checks that a commit is ready for a CRAN release,
+on the release branch or, on the fast path, on `main`, after the date commit and the check workflow's run on it.
+It fails on what CRAN requires, reports on what CRAN expects without failing on it,
+and keeps one comment on the checklist pull request, which later runs update in place.
+
+```yaml
+on:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    uses: krlmlr/r-release-actions/.github/workflows/release-gate.yaml@<sha> # vX.Y.Z
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    with:
+      sha: ${{ github.sha }}
+```
+
+Inputs:
+
+- `sha` (required): the full SHA of the commit to check, the head of the branch the caller was dispatched on.
+- `check-workflow`: the file name of the check workflow that built the tarball, by default `R-CMD-check.yaml`.
+- `check-run-id`: the check run to take the tarball from; by default, the newest run of `check-workflow` on `sha` that holds it.
+
+What a run does, job by job:
+
+- **hard** runs every check that CRAN requires, and fails when any fails, with an error for each that names its cause:
+  - `Version:` has exactly three components, such as `1.2.3` or `1.2-3`.
+    A version with two components, such as `1.0`, fails on purpose: this process releases three-component versions only.
+  - `DESCRIPTION` has no `Remotes` field.
+  - CRAN's package database, [`packages.rds`](https://cran.r-project.org/web/packages/packages.rds), can be read.
+    The next checks use it, and a database that cannot be read fails, because what they check is then unknown.
+  - No dependency in `Depends`, `Imports`, `LinkingTo`, `Suggests` or `Enhances` names a source outside CRAN as `Remotes` does,
+    such as `owner/repo` or `github::owner/repo`, or requires a version that CRAN does not have:
+    one higher than CRAN's current version for `>=` and `>`, another one for `==`.
+    A constraint with four components, such as `Matrix (>= 1.6-1.1)`, passes when CRAN has that version or a later one.
+    Base packages such as `stats` pass; recommended packages such as `Matrix` are on CRAN, and are checked as any other.
+    A package that is not on CRAN passes, reported in the comment, when Bioconductor's release lists it
+    in its software, annotation data or experiment data index, the `PACKAGES` files under
+    `https://bioconductor.org/packages/release/`, because CRAN installs from Bioconductor too;
+    `biocViews` in `DESCRIPTION` plays no part.
+    A package in `Suggests` or `Enhances` may also come from a repository named in `Additional_repositories`,
+    as [CRAN's policy](https://cran.r-project.org/web/packages/policies.html) allows; it passes, reported.
+    The field itself is reported too, for a look at whether each repository is needed and reachable.
+    Any other package that is not on CRAN fails.
+    A version constraint on a Bioconductor package is checked against the version in its index, as for CRAN.
+    The gate reads Bioconductor's release indexes only, so a package that exists only in Bioconductor's devel branch fails.
+    Bioconductor's indexes that cannot be read are reported once,
+    and a package that is not on CRAN then fails, with that cause in its error.
+  - `NEWS.md` has exactly one section for the version, found by its heading `# <package> X.Y.Z` with or without a date,
+    outside code fences.
+    Without one, the error names the headings that mention the version, such as `## <package> X.Y.Z` or `# <package> vX.Y.Z`.
+    The heading carries a date, the same as `Date:` in `DESCRIPTION`, at most 31 days before the run's date in UTC
+    and at most a day after it.
+    A missing `Date:` fails on purpose, because the date commit sets it with the heading's date.
+
+  It then finds the checklist pull request as the submission does; without one, the run reports only to its summary.
+- **checks** reports on what CRAN expects, and fails on no finding.
+  It installs the package's dependencies, rmarkdown, spelling and urlchecker, and reports:
+  - a setup step that failed, such as installing a dependency, with the checks it keeps from running;
+  - a `Deadline` that CRAN's package database sets for the package, with its date.
+    A deadline asks for a fix in a release, so it never blocks the release that brings the fix;
+    the report points at CRAN's check results;
+  - help pages with a `\usage` section and without a `\value` section, leaving out pages of data sets and of the package;
+  - `README.md`, when `README.Rmd` was committed after it, or when knitting `README.Rmd` gives another `README.md`;
+  - the URLs that `urlchecker::url_check()` flags;
+  - the words that `spelling::spell_check_package()` flags;
+  - `R CMD check --as-cran --no-manual` with CRAN's incoming checks, the remote ones included,
+    on the tarball that the check workflow built and checked, taken as the submission takes it.
+    Nothing skips the incoming check of the dates.
+    Without a green check run holding the tarball, or when taking it fails, this check is reported as not run,
+    quoting the error of the step that took it, with a link to the job.
+    It is reported as not run, too, when the package's dependencies could not be installed.
+
+  A check that cannot run, such as a knit that fails, is reported as not run.
+- **report** updates the release gate's comment on the checklist pull request:
+  whether the release is ready, which is whether **hard** passed, then the result of each check.
+  A report too long for a comment is cut, and the run's summary page has all of it.
+
+The gate has no dry run: it writes nothing but its comment, and every run that finds the checklist pull request updates it.
+Runs on the same branch cancel each other, and the newest one reports.
+The calling job grants `contents: read` to read the commit, `actions: read` to find the tarball,
+and `pull-requests: write` to report.
+The package's own code runs only in **checks**, and only after the steps that use a token:
+the one that takes the checked tarball, and the one that finds the job's URL for the comment's links.
+That step finds the job by the name it passes as `job-name`, which must match the `name:` of **checks**;
+if it does not, the comment links the run instead of the job.
 
 ## Layout
 
