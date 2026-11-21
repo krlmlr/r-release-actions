@@ -1,0 +1,34 @@
+name: "Release status"
+description: >
+  Finishes the CRAN releases that Posit's package manager lists:
+  compares CRAN's tarball with the draft release's, writes the `vX.Y.Z` tag, publishes the draft,
+  and merges the release pull request after the development bump, or, on the fast path,
+  commits the bump to the default branch and closes the empty checklist pull request,
+  handing over in a comment what it cannot write;
+  with release-status.sh beside this file.
+  The job needs `contents: write` and `pull-requests: write`, a dry run included, since only such a token sees draft releases.
+
+inputs:
+  token:
+    description: "A token with `contents: write` and `pull-requests: write`"
+    required: true
+  dry-run:
+    description: "`true` writes nothing and reports what would be written"
+    default: "false"
+
+outputs:
+  published:
+    description: "One `<package> <version>` per line for each release this run published"
+    value: ${{ steps.run.outputs.published }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: run
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        "$GITHUB_ACTION_PATH/release-status.sh"
+      shell: bash

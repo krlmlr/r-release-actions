@@ -4,8 +4,8 @@ Reusable GitHub workflows and composite actions that take an R package through a
 A package's own workflows call them by a pinned release.
 
 **Status: under construction.**
-The CRAN submission, the builder checks and the release gate are the first workflows;
-the check that builds the tarball they use and the workflow that publishes a release after acceptance follow.
+The CRAN submission, the builder checks, the release gate and the release status are the first workflows;
+the check that builds the tarball they use follows.
 Nothing here is released yet.
 
 ## How a release flows
@@ -176,7 +176,7 @@ Each step writes what it read, checked and did to the run's summary, with how to
 [`.github/workflows/builders.yaml`](.github/workflows/builders.yaml) uploads the same checked tarball
 to win-builder and to macbuilder, and reports both on the checklist pull request.
 These checks inform the release and never gate it: the submission neither waits for them nor reads their results.
-Both check on R-devel only; the `actions/builders` action also takes the other flavors, which the workflow does not use.
+Win-builder checks on the queues that `queues` names, R-devel by default, and macbuilder on R-devel only.
 The workflow takes the tarball exactly as the submission does, from a green check run of the commit,
 so what the builders check is the file that CRAN receives.
 
@@ -203,6 +203,8 @@ jobs:
 Inputs:
 
 - `sha`, `dry-run`, `check-workflow` and `check-run-id`: as for the CRAN submission.
+- `queues`: the win-builder queues to upload to, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`;
+  by default `R-devel`.
 - `macbuilder-timeout-minutes`: how long to wait for macbuilder's result, by default 60 and at most 150.
 
 What a run does, job by job:
@@ -211,8 +213,9 @@ What a run does, job by job:
   because the builders may run days before the submission.
   It finds the checklist pull request, and runs on without one.
 - **tarball** finds the check run and its tarball artifact, and verifies the file, as the submission's job of that name does.
-- **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/R-devel/`,
-  as `devtools::check_win_devel()` does, retrying a refused connection or an unresolved host twice.
+- **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/<queue>/` for each queue in `queues`,
+  as `devtools::check_win_devel()` does for `R-devel`, retrying a refused connection or an unresolved host twice.
+  It tries every queue, and fails after the others when one upload failed.
   Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
   A failed upload fails the job.
 - **macbuilder** posts the tarball to `https://mac.r-project.org/macbuilder/v1/submit` for `r-devel`,
@@ -323,6 +326,127 @@ The package's own code runs only in **checks**, and only after the steps that us
 the one that takes the checked tarball, and the one that finds the job's URL for the comment's links.
 That step finds the job by the name it passes as `job-name`, which must match the `name:` of **checks**;
 if it does not, the comment links the run instead of the job.
+
+## Release status
+
+[`.github/workflows/release-status.yaml`](.github/workflows/release-status.yaml) finishes a release once CRAN has accepted it:
+it writes the tag, publishes the draft release, and brings the release and the development bump to the default branch.
+A package calls it nightly and on dispatch, from its own repository, with its own token.
+
+```yaml
+on:
+  schedule:
+    - cron: "43 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        type: boolean
+        default: false
+
+jobs:
+  release-status:
+    uses: krlmlr/r-release-actions/.github/workflows/release-status.yaml@<sha> # vX.Y.Z
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      dry-run: ${{ inputs.dry-run == true }}
+```
+
+The schedule stays on between releases, and a run without a draft release does nothing.
+In a public repository GitHub disables a schedule after 60 days without activity,
+so a release of a package that quiet starts with enabling the workflow again: `gh workflow enable <file> --repo <owner>/<repo>`.
+
+Inputs:
+
+- `dry-run`: read and check everything, report what a real run would write, and write nothing; off by default,
+  and off on a scheduled run.
+
+What a run does:
+
+- It lists the releases whose notes carry the submission marker `<!-- cran-submission: <package> X.Y.Z -->`
+  and whose tag name is `vX.Y.Z`: every draft, and every published release whose checklist pull request is still open,
+  which an earlier run left unfinished.
+  It stops when there is none, and fails before writing anything when the releases, the open pull requests
+  or the repository's default branch cannot be read.
+- On a run with something to finish, it reads the source index of Posit's package manager,
+  `https://packagemanager.posit.co/cran/latest/src/contrib/PACKAGES.gz`, once.
+  That is the test `fledge:::release_after_cran_built_binaries()` made, and a listing there also means the binaries are on their way.
+  A version the index does not list yet is a line in the run's summary, and the run stays green.
+  A later version in the index counts too, so that a draft left behind by a missed run still finishes.
+  Versions compare as R's `package_version()` compares them, so `1.0-1` equals `1.0.1.0`.
+  A run finishes at most one accepted release, and leaves any other for the next run, so that it fits the job's timeout;
+  a release that is only handed over, warned about or stopped does not count, and no release is started after 10 minutes.
+- For a draft whose version the index lists, it takes these steps in order, and stops at the first that fails:
+  - **compare**: it checks that the draft's target is a full commit SHA, as the submission writes it,
+    and that `DESCRIPTION` there carries the package and the version.
+    It downloads CRAN's tarball of the version, from `src/contrib/` or `src/contrib/Archive/<package>/`,
+    and the draft's asset `<package>_X.Y.Z.tar.gz`, checked against the digest GitHub records.
+    The two must hold the same paths, of the same types and executable bits, with the same contents,
+    but for CRAN's `MD5` file and the fields CRAN adds to `DESCRIPTION`, `Repository` and `Date/Publication`;
+    symbolic links are compared as links.
+    A difference refuses the tag and fails the run, because CRAN then accepted another upload than the draft records,
+    as when a stale confirmation link from an earlier attempt was followed.
+    A draft without that asset, or several drafts of the version, fail as well.
+  - **tag**: it writes the annotated tag `vX.Y.Z` on the draft's target,
+    with `<package> X.Y.Z`, a blank line and the version's `NEWS.md` section at that commit as its message.
+    A tag that exists on the target already is kept; one on another commit fails the run, since a tag is never moved.
+  - **publish**: it publishes the draft, which is what says that the version is on CRAN,
+    as the latest release when the index lists this version, and below the latest when it lists a later one.
+  - **finish**: it finds the checklist pull request as the submission does.
+    One that changes no file is the fast path's empty checklist pull request; any other is the release pull request.
+    - On the default path it checks that the release branch, the pull request's head, reaches the released commit,
+      merges the default branch into the release branch unless the branch carries the bump already, commits the development bump on it,
+      and merges the release pull request with a merge commit, at the commit it just wrote.
+    - On the fast path it checks that the default branch reaches the released commit,
+      commits the development bump to the default branch, and closes the empty checklist pull request.
+    - A write it cannot make it hands over, and the run stays green with a warning:
+      a merge of the default branch that conflicts, as a hotfix's does by construction,
+      with the bump and the merge of the release pull request after it;
+      a merge or a push that the default branch's protection refuses;
+      and a release pull request from another repository or into another branch.
+      On the fast path the empty checklist pull request then stays open until the bump lands.
+- For a published release whose checklist pull request is open, it requires the index to list the version or a later one,
+  and warns and writes nothing otherwise, as for a release published by hand too early.
+  It then takes the **compare** step again against the release's asset, which catches a resubmission that moved the branch on,
+  checks that the tag is on the release's target, and takes the **finish** step.
+- For each accepted version it keeps one comment on the checklist pull request, marked `<!-- release-status: <package> X.Y.Z -->`:
+  what it checked and wrote, and what is left, with the commands that do it.
+  Without a checklist pull request it tags and publishes, warns, and leaves the rest to the maintainer.
+
+A merge or a push made with the workflow's own token starts no workflows on the default branch, so none runs there until its next push.
+A run is idempotent: a tag on the target, a published release, a branch that carries the bump
+and a branch that holds the default branch already count as done.
+A run that stops after publishing, even one killed before its comment, leaves the checklist pull request open,
+so the next run lists the published release and finishes it.
+The bump checks that the branch it writes to carries the released version, or its bump, and hands over otherwise.
+A dry run holds the same token, because only a token that can write sees draft releases, and writes nothing:
+its summary shows what a real run would tag, publish, commit, merge and close, and the comment it would write.
+The run checks out nothing and runs none of the package's code.
+Its downloads are bounded so that one accepted release fits well within the job's 30 minutes,
+and one run per repository runs at a time, never cancelled.
+The calling job grants `contents: write` to tag, publish and commit, and `pull-requests: write` to merge, close and comment.
+
+### The development bump
+
+[`actions/dev-bump/dev-bump.sh`](actions/dev-bump/dev-bump.sh) writes the development bump into a checkout,
+and the release status workflow runs it on the files it commits.
+It sets `Version: X.Y.Z.9000` in `DESCRIPTION`, and puts the development section at the top of `NEWS.md`,
+replacing one that is there:
+
+```markdown
+# <package> (development version)
+
+Changes since vX.Y.Z: <https://github.com/<owner>/<repo>/compare/vX.Y.Z...main>
+```
+
+It needs the release's own section in `NEWS.md`, changes nothing in a checkout that carries the bump already, and commits nothing.
+A maintainer who takes over the bump runs it from the repository's root:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/krlmlr/r-release-actions/main/actions/dev-bump/dev-bump.sh |
+  bash -s -- . <owner>/<repo> main
+```
 
 ## Layout
 
