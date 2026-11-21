@@ -1,0 +1,100 @@
+name: "Release gate"
+description: >
+  Enforces what CRAN requires of a release (mode `hard`): a three-component version, no `Remotes`,
+  no dependency on a version or source that CRAN or Bioconductor does not have,
+  and a NEWS.md section dated as DESCRIPTION and at most 31 days old.
+  Reports on what CRAN expects, and never fails on it (mode `report`): a deadline in CRAN's package database,
+  `\value` sections, a stale README,
+  URLs, spelling, and `R CMD check --as-cran` on the checked tarball when there is one.
+  With release-gate.sh beside this file; both modes need R on the PATH to read CRAN's package database,
+  and `report` needs the package's dependencies, rmarkdown, urlchecker and spelling installed.
+
+inputs:
+  mode:
+    description: "`hard`, `report` or `job-url`"
+    required: true
+  path:
+    description: "The package's checkout"
+    default: "."
+  tarball:
+    description: "`report`: the checked tarball to run `R CMD check --as-cran` on; empty skips that check"
+    default: ""
+  tarball-outcome:
+    description: "`report`: the outcome of the step that took the checked tarball, reported unless `success`; empty when there was none"
+    default: ""
+  tarball-failure-file:
+    description: "`report`: the file in which the step that takes the tarball wrote its failure, quoted when that step failed"
+    default: ""
+  job-name:
+    description: >-
+      `job-url`: the job's `name:`, which must match it; a mismatch links the run instead
+    default: ""
+  token:
+    description: "`job-url`: a token with `actions: read`, to find the job among the run's jobs; `report` takes none"
+    default: ""
+  job-url:
+    description: "`report`: the job to link, from mode `job-url`; empty links the run"
+    default: ""
+  setup:
+    description: "`report`: one `<setup step>=<outcome>` per line; each that is not `success` is reported with the checks"
+    default: ""
+
+outputs:
+  package:
+    description: "`hard`: the package name"
+    value: ${{ steps.run.outputs.package }}
+  version:
+    description: "`hard`: the version"
+    value: ${{ steps.run.outputs.version }}
+  passed:
+    description: "`hard`: `true` when every hard check passed, `false` otherwise"
+    value: ${{ steps.run.outputs.passed }}
+  report:
+    description: "The checks' results, as Markdown"
+    value: ${{ steps.run.outputs.report }}
+  job-url:
+    description: "`job-url`: the job's URL, or the run's"
+    value: ${{ steps.job.outputs.job-url }}
+
+runs:
+  using: "composite"
+  steps:
+    # The only step that holds the token, run before the package's code, which `report` runs without one.
+    - id: job
+      if: inputs.mode == 'job-url'
+      env:
+        JOB_NAME: ${{ inputs.job-name }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        "$GITHUB_ACTION_PATH/release-gate.sh" job-url
+      shell: bash
+
+    # The status is kept, not dropped, so that the outputs reach the job even when a hard check fails; the next step fails then.
+    - id: run
+      if: inputs.mode != 'job-url'
+      env:
+        MODE: ${{ inputs.mode }}
+        PKG_PATH: ${{ inputs.path }}
+        TARBALL: ${{ inputs.tarball }}
+        TARBALL_OUTCOME: ${{ inputs.tarball-outcome }}
+        SETUP: ${{ inputs.setup }}
+        TARBALL_FAILURE_FILE: ${{ inputs.tarball-failure-file }}
+        JOB_URL: ${{ inputs.job-url }}
+      run: |
+        script="$GITHUB_ACTION_PATH/release-gate.sh"
+        status=0
+        case "$MODE" in
+          hard) "$script" hard "$PKG_PATH" "$RUNNER_TEMP/release-gate" || status=$? ;;
+          report) "$script" report "$PKG_PATH" "$RUNNER_TEMP/release-gate" ${TARBALL:+"$TARBALL"} || status=$? ;;
+          *) echo "::error::Unknown mode: $MODE"; status=2 ;;
+        esac
+        echo "status=$status" >>"$GITHUB_OUTPUT"
+      shell: bash
+
+    - if: inputs.mode != 'job-url' && steps.run.outputs.status != '0'
+      env:
+        STATUS: ${{ steps.run.outputs.status }}
+      run: |
+        echo "::error title=Release gate::The release gate failed with status ${STATUS:-unknown}; the errors above name each cause."
+        exit 1
+      shell: bash

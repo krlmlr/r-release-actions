@@ -55,6 +55,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # The release gate's test reads a CRAN package database it writes with R, as the gate does.
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          r-version: release
+          use-public-rspm: true
+
       - name: Run shellcheck
         run: shellcheck -x actions/*/*.sh
 

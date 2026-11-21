@@ -31,6 +31,8 @@ has "the summary names the stage" "$s" "### Stage: failed"
 has "with the excerpt" "$s" "line one"
 has "and the advice" "$s" "- Second."
 has "and the process" "$s" "- The release process: https://github.com/krlmlr/r-release-actions#readme"
+(FAILURE_FILE=$SCRATCH/failure fail "Stage" "Title" $'Two\nlines' -- "Advice.") >/dev/null 2>&1 || :
+is "with FAILURE_FILE, the title and message go there as one line" "$(cat "$SCRATCH/failure")" "Title: Two lines"
 unset GITHUB_STEP_SUMMARY
 
 section "outputs and fields"

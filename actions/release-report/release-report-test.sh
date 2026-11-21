@@ -7,7 +7,7 @@
 #      or by a person with write access, falling back to an owner, member or collaborator;
 #      it ignores one by anyone else, or by a bot from a fork, with a warning, and fails without exactly one when required.
 #   2. `status` posts the workflow's comment, then updates it; a comment with the marker by someone else is left alone;
-#      the overall result is failure when any job failed.
+#      the overall result is failure when any job failed; a comment that cannot be written fails with GitHub's error.
 #      `builders` does the same for the builder uploads' comment, with each upload and macbuilder's result;
 #      a dry run only shows it.
 #   3. `attempt` posts a new comment numbered after the earlier attempts of the version, and edits none;
@@ -151,6 +151,9 @@ out=$(RESULTS='version=success' run status 8 cran-submission "CRAN submission")
 has "comments that cannot be read fail, with GitHub's error" "$out" \
   "::error title=The checklist pull request's comments cannot be read::Reading the comments of #8 failed: gh: Not Found (HTTP 404)."
 is "and post nothing" "$(cat "$SCRATCH/writes")" ""
+out=$(GH_STUB_FAIL_WRITES=1 RESULTS='version=success' run status 7 cran-submission "CRAN submission")
+has "a comment that cannot be written fails, with GitHub's error" "$out" \
+  "::error title=The workflow's comment cannot be written::Writing the comment on #7 failed: gh: Forbidden (HTTP 403)."
 
 section "builders"
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
@@ -226,6 +229,9 @@ out=$(MACBUILDER_JOB=success run builders 8 fakepkg 1.0.1)
 has "comments that cannot be read fail, with GitHub's error" "$out" \
   "::error title=The checklist pull request's comments cannot be read::Reading the comments of #8 failed: gh: Not Found (HTTP 404)."
 is "and post nothing" "$(cat "$SCRATCH/writes")" ""
+out=$(GH_STUB_FAIL_WRITES=1 MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+has "a comment that cannot be written fails, with GitHub's error" "$out" \
+  "::error title=The builders' comment cannot be written::Writing the comment on #7 failed: gh: Forbidden (HTTP 403)."
 
 section "attempt"
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
