@@ -230,12 +230,14 @@ What a run does, job by job:
     The heading carries a date, the same as `Date:` in `DESCRIPTION`, at most 31 days before the run's date in UTC
     and at most a day after it.
     A missing `Date:` fails on purpose, because the date commit sets it with the heading's date.
-  - CRAN's package database sets no `Deadline` for the package; a package that is not on CRAN passes.
 
   It then finds the checklist pull request as the submission does; without one, the run reports only to its summary.
 - **checks** reports on what CRAN expects, and fails on no finding.
   It installs the package's dependencies, rmarkdown, spelling and urlchecker, and reports:
   - a setup step that failed, such as installing a dependency, with the checks it keeps from running;
+  - a `Deadline` that CRAN's package database sets for the package, with its date.
+    A deadline asks for a fix in a release, so it never blocks the release that brings the fix;
+    the report points at CRAN's check results;
   - help pages with a `\usage` section and without a `\value` section, leaving out pages of data sets and of the package;
   - `README.md`, when `README.Rmd` was committed after it, or when knitting `README.Rmd` gives another `README.md`;
   - the URLs that `urlchecker::url_check()` flags;

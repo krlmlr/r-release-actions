@@ -16,11 +16,11 @@
 #     - NEWS.md has exactly one section for the version, found by `# <package> <version>` with the date optional,
 #       outside code fences, whose heading's date is DESCRIPTION's `Date:`, at most 31 days old and at most a day ahead (UTC);
 #       without one, the error names the headings that mention the version;
-#     - CRAN's package database sets no `Deadline` for the package, which a package not on CRAN passes.
 #     `Additional_repositories` is reported, not enforced.
 #     Writes `package`, `version`, `passed` (`true` or `false`) and `report`, a Markdown list, to GITHUB_OUTPUT.
 #   report <package dir> <out dir> [<tarball>]
 #     Reports, and never fails on a finding: a setup step that failed (SETUP),
+#     a `Deadline` that CRAN's package database (CRAN_DB_URL) sets for the package, naming its date,
 #     a checked tarball that could not be taken (TARBALL_OUTCOME), help pages documenting functions without `\value`,
 #     a README.md older than README.Rmd in the git history or different from a fresh knit,
 #     URLs that urlchecker flags, words that spelling flags, and, with a tarball,
@@ -235,7 +235,7 @@ cmd_hard() {
     --output "$db" "$db_url" 2>"$out/curl.err"; then
     db=''
     flunk "CRAN database" "CRAN's package database cannot be read" \
-      "Reading $db_url failed: $(head -n 1 "$out/curl.err"), so the dependencies and a deadline cannot be checked." \
+      "Reading $db_url failed: $(head -n 1 "$out/curl.err"), so the dependencies cannot be checked." \
       "$out/curl.err" -- \
       "Run the gate again; if CRAN is down, wait until it is back."
   fi
@@ -392,31 +392,6 @@ and the date in parentheses, each after one space."
   fi
   endgroup
 
-  group "CRAN deadline"
-  local deadline
-  if [ -z "$db" ]; then
-    say "Not checked: CRAN's package database cannot be read."
-  elif ! deadline=$("$rscript" --vanilla -e "$r_deadline" "$db" "$pkg" 2>"$out/r.err"); then
-    flunk "CRAN deadline" "CRAN's package database cannot be read" \
-      "Reading the downloaded database with R failed: $(tail -n 1 "$out/r.err")." "$out/r.err" -- \
-      "Run the gate again; if it fails again, the database's format has changed, and this check needs to follow."
-  else
-    val "deadline" "$deadline"
-    case "$deadline" in
-      absent) pass "CRAN deadline" "$pkg is not on CRAN, so CRAN set no deadline." ;;
-      none) pass "CRAN deadline" "CRAN set no deadline for $pkg." ;;
-      *)
-        local why="CRAN asked for a fix of problems it found, and archives the package unless they are fixed by then."
-        local checks_url="https://cran.r-project.org/web/checks/check_results_$pkg.html"
-        flunk "CRAN deadline" "CRAN set a deadline" \
-          "CRAN's package database gives $pkg the deadline \`$deadline\`: $why" -- \
-          "Read the problems on $checks_url and in CRAN's email to the maintainer, and fix them in this release." \
-          "The deadline stays in the database until CRAN accepts a fixed version."
-        ;;
-    esac
-  fi
-  endgroup
-
   output_file report "$report" 30000
   if [ ${#failed[@]} -gt 0 ]; then
     output passed false
@@ -493,6 +468,32 @@ cmd_report() {
     unrun "Setup: $step" "the job's step that sets up \`$step\` ended with \`$outcome\`; its error in $job_url names the cause, \
 and the checks below that need it cannot run."
   done <<<"${SETUP:-}"
+
+  # A deadline asks for a fix in a release, so it never blocks one; it is reported with its date.
+  group "CRAN deadline"
+  local db_url=${CRAN_DB_URL:-https://cran.r-project.org/web/packages/packages.rds} pkg deadline
+  pkg=$(dcf_field Package "$pkgdir/DESCRIPTION" 2>/dev/null) || pkg=''
+  val "database" "$db_url"
+  if ! valid_package "$pkg"; then
+    unrun "CRAN deadline" "\`DESCRIPTION\` names no valid package."
+  elif ! curl --silent --show-error --fail --location --connect-timeout 30 --max-time 300 \
+    --output "$out/packages.rds" "$db_url" 2>"$out/curl.err"; then
+    unrun "CRAN deadline" "reading $db_url failed: $(head -n 1 "$out/curl.err")."
+  elif ! deadline=$("$rscript" --vanilla -e "$r_deadline" "$out/packages.rds" "$pkg" 2>"$out/r.err"); then
+    unrun "CRAN deadline" "reading CRAN's package database with R failed: $(tail -n 1 "$out/r.err")." "$out/r.err"
+  else
+    val "deadline" "$deadline"
+    case "$deadline" in
+      absent) clean "CRAN deadline" "$pkg is not on CRAN, so CRAN set no deadline." ;;
+      none) clean "CRAN deadline" "CRAN set no deadline for $pkg." ;;
+      *)
+        finding "CRAN deadline" "CRAN set the deadline \`$deadline\` for $pkg, and archives it unless the problems CRAN found \
+are fixed by then: see https://cran.r-project.org/web/checks/check_results_$pkg.html and CRAN's email to the maintainer, \
+and fix them in this release. The deadline stays until CRAN accepts a fixed version."
+        ;;
+    esac
+  fi
+  endgroup
 
   group "Help pages: \\value"
   local rd missing=()

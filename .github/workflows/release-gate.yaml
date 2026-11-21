@@ -4,9 +4,10 @@
 #
 # Jobs, in order, each with only the permissions it needs:
 #   hard    fails on a version that is not a release version, `Remotes`, a dependency on a version or source CRAN does not have,
-#           a NEWS.md section not dated as DESCRIPTION or older than 31 days, and a deadline set by CRAN;
+#           and a NEWS.md section not dated as DESCRIPTION or older than 31 days;
 #           finds the checklist pull request
-#   checks  reports, and never fails on a finding: setup steps that failed, help pages without `\value`, a stale README, URLs, spelling,
+#   checks  reports, and never fails on a finding: a deadline set by CRAN, setup steps that failed,
+#           help pages without `\value`, a stale README, URLs, spelling,
 #           and `R CMD check --as-cran` on the checked tarball of the commit, when a green check run holds one
 #   report  updates the release gate's one comment on the checklist pull request
 # Nothing here writes to the repository, and only `report` can write, to the pull request's comments.

@@ -8,9 +8,10 @@
 #      or on a version CRAN does not have (four components CRAN has pass; base packages pass; Bioconductor's packages,
 #      read from local indexes, and Additional_repositories are reported, and unreadable indexes too),
 #      a missing, doubled, undated, mismatched, stale or future NEWS.md section,
-#      naming near-miss headings and ignoring code fences, a deadline in CRAN's package database,
-#      and a database that cannot be read; one failure does not hide another.
-#   3. `report` never fails, and reports a failed setup step, a checked tarball that could not be taken,
+#      naming near-miss headings and ignoring code fences,
+#      and a database that cannot be read; one failure does not hide another. A deadline is not a hard check.
+#   3. `report` never fails, and reports a deadline in CRAN's package database with its date, a failed setup step,
+#      a checked tarball that could not be taken,
 #      help pages without `\value`, a stale or differently knitted README, URLs, spelling, and the problems of
 #      `R CMD check`, run with CRAN's incoming checks on the tarball; a check that cannot run is reported as not run,
 #      and a long report is cut to fit an environment variable; it reads nothing from GitHub.
@@ -132,7 +133,7 @@ has "and Remotes" "$o" "- ✅ **Remotes:**"
 has "and the dependencies" "$o" "- ✅ **Dependencies:**"
 has "and NEWS.md, found with its date" "$o" \
   "- ✅ **NEWS.md:** one section \`# fakepkg 1.0.1 (2026-11-10)\`, dated as \`DESCRIPTION\`, 5 days ago."
-has "and the deadline" "$o" "- ✅ **CRAN deadline:** CRAN set no deadline for fakepkg."
+hasnt "the deadline is not a hard check" "$o" "CRAN deadline"
 has "the report is a multi-line output" "$o" "report<<EOF_"
 has "a notice says so" "$out" "::notice title=Release gate::fakepkg 1.0.1 passes every hard check."
 checkout 1.0-1 2026-10-15 "# fakepkg 1.0-1 (2026-10-15)"
@@ -140,11 +141,9 @@ out=$(hard)
 has "a dash separates components too, and 31 days pass" "$out" "exit 0"
 checkout 1.0.1 2026-11-16 "# fakepkg 1.0.1 (2026-11-16)"
 has "a day ahead passes, for the maintainer's time zone" "$(hard)" "exit 0"
-db absent
+db 2026-12-01
 checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
-out=$(hard)
-has "a package not on CRAN has no deadline" "$out" "exit 0"
-has "and says so" "$(cat "$SCRATCH/output")" "fakepkg is not on CRAN, so CRAN set no deadline."
+has "a deadline does not fail the hard checks" "$(hard)" "exit 0"
 db ""
 
 section "hard: the version"
@@ -153,7 +152,7 @@ out=$(hard)
 has "a development version fails" "$out" "::error title=No release version::\`DESCRIPTION\` carries \`1.0.1.9000\`"
 has "with exit status 1" "$out" "exit 1"
 has "and the verdict" "$(cat "$SCRATCH/output")" "passed=false"
-has "the other checks still run" "$(cat "$SCRATCH/output")" "- ✅ **CRAN deadline:**"
+has "the other checks still run" "$(cat "$SCRATCH/output")" "- ✅ **Remotes:**"
 checkout 1.0 2026-11-15 "# fakepkg 1.0 (2026-11-15)"
 has "two components fail" "$(hard)" "::error title=No release version::"
 
@@ -270,13 +269,8 @@ has "a date that is no date fails" "$(hard)" "::error title=The date is no date:
 rm "$PKG/NEWS.md"
 has "no NEWS.md fails" "$(hard)" "::error title=No NEWS.md::"
 
-section "hard: CRAN's deadline"
-db 2026-12-01
+section "hard: CRAN's package database"
 checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"
-out=$(hard)
-has "a deadline fails" "$out" "::error title=CRAN set a deadline::CRAN's package database gives fakepkg the deadline \`2026-12-01\`"
-has "pointing at the check results" "$out" "check_results_fakepkg.html"
-db ""
 out=$(CRAN_DB_URL=file://$SCRATCH/missing.rds hard)
 has "a database that cannot be downloaded fails" "$out" "::error title=CRAN's package database cannot be read::Reading file://"
 is "once, and nothing else fails" "$(grep -c '^::error' <<<"$out")" 1
@@ -284,9 +278,7 @@ has "the dependencies are checked for sources outside CRAN only" "$(cat "$SCRATC
   "checked for sources outside CRAN only, as CRAN's package database cannot be read."
 echo "not an rds" >"$SCRATCH/bad.rds"
 out=$(CRAN_DB_URL=file://$SCRATCH/bad.rds hard)
-has "and one that R cannot read" "$out" \
-  "::error title=CRAN's package database cannot be read::Reading the downloaded database with R failed"
-has "which the dependencies report too" "$out" \
+has "one that R cannot read fails the dependencies" "$out" \
   "::error title=The dependencies cannot be checked against CRAN::Reading CRAN's package database with R failed"
 deps 'owner/pkg'
 out=$(CRAN_DB_URL=file://$SCRATCH/bad.rds hard)
@@ -300,9 +292,9 @@ section "hard: one failure does not hide another"
 db 2026-12-01
 EXTRA='Remotes: r-lib/rlang' checkout 1.0.1.9000 2026-10-01 "# fakepkg 1.0.1.9000 (2026-10-01)"
 out=$(hard)
-is "four checks fail, each with its own error" "$(grep -c '^::error' <<<"$out")" 4
-has "and the log names them" "$out" "4 hard checks failed: Version Remotes NEWS.md CRAN deadline."
-has "the summary too" "$(cat "$SUMMARY")" "**Not ready:** Version, Remotes, NEWS.md, CRAN deadline failed."
+is "three checks fail, each with its own error" "$(grep -c '^::error' <<<"$out")" 3
+has "and the log names them" "$out" "3 hard checks failed: Version Remotes NEWS.md."
+has "the summary too" "$(cat "$SUMMARY")" "**Not ready:** Version, Remotes, NEWS.md failed."
 db ""
 
 section "hard: usage"
@@ -345,6 +337,7 @@ has "knitted in a copy" "$(cat "$STUB/knit.log")" "knit in $SCRATCH/out/knit"
 has "URLs" "$o" "- ✅ **URLs:** urlchecker flags none."
 has "spelling" "$o" "- ✅ **Spelling:** spelling flags no word."
 has "R CMD check" "$o" "- ✅ **R CMD check:** \`fakepkg_1.0.1.tar.gz\`: OK with CRAN's incoming checks."
+has "no deadline" "$o" "- ✅ **CRAN deadline:** CRAN set no deadline for fakepkg."
 is "on the tarball, as CRAN does" "$(cat "$STUB/R.args")" "R CMD check --as-cran --no-manual $SCRATCH/fakepkg_1.0.1.tar.gz"
 is "with the incoming checks, remote ones included, and the dates not skipped" "$(cat "$STUB/R.env")" \
   "_R_CHECK_CRAN_INCOMING_=true
@@ -353,6 +346,24 @@ out=$(_R_CHECK_CRAN_INCOMING_SKIP_DATES_=true run report "$PKG" "$SCRATCH/out" "
 hasnt "a caller's setting does not skip the dates" "$(cat "$STUB/R.env")" "SKIP_DATES"
 
 section "report: findings, which never fail"
+db 2026-12-01
+out=$(run report "$PKG" "$SCRATCH/out")
+has "a deadline is reported, never failed" "$out" "exit 0"
+has "naming its date" "$(cat "$SCRATCH/output")" \
+  "- ⚠️ **CRAN deadline:** CRAN set the deadline \`2026-12-01\` for fakepkg, and archives it unless the problems CRAN found"
+has "pointing at the check results" "$(cat "$SCRATCH/output")" "check_results_fakepkg.html"
+has "with a warning in the run" "$out" "::warning title=CRAN deadline::"
+db absent
+has "a package not on CRAN has no deadline" "$(run report "$PKG" "$SCRATCH/out"; cat "$SCRATCH/output")" \
+  "- ✅ **CRAN deadline:** fakepkg is not on CRAN, so CRAN set no deadline."
+db ""
+out=$(CRAN_DB_URL=file://$SCRATCH/missing.rds run report "$PKG" "$SCRATCH/out")
+has "a database that cannot be downloaded is not run" "$(cat "$SCRATCH/output")" \
+  "- ⏭️ **CRAN deadline:** not run: reading file://$SCRATCH/missing.rds failed"
+has "and does not fail" "$out" "exit 0"
+out=$(CRAN_DB_URL=file://$SCRATCH/bad.rds run report "$PKG" "$SCRATCH/out")
+has "nor one that R cannot read" "$(cat "$SCRATCH/output")" \
+  "- ⏭️ **CRAN deadline:** not run: reading CRAN's package database with R failed"
 printf '\\name{bar}\n\\usage{bar()}\n' >"$PKG/man/bar.Rd"
 printf '  URL  Status Message\n1 https://example.org/gone 404 Not Found\n' >"$STUB/urls.out"
 echo 3 >"$STUB/urls.rc"

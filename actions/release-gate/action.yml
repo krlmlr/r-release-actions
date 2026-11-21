@@ -1,11 +1,12 @@
 name: "Release gate"
 description: >
   Enforces what CRAN requires of a release (mode `hard`): a three-component version, no `Remotes`,
-  no dependency on a development version, a NEWS.md section dated as DESCRIPTION and at most 31 days old,
-  and no deadline in CRAN's package database.
-  Reports on what CRAN expects, and never fails on it (mode `report`): `\value` sections, a stale README,
+  no dependency on a version or source that CRAN or Bioconductor does not have,
+  and a NEWS.md section dated as DESCRIPTION and at most 31 days old.
+  Reports on what CRAN expects, and never fails on it (mode `report`): a deadline in CRAN's package database,
+  `\value` sections, a stale README,
   URLs, spelling, and `R CMD check --as-cran` on the checked tarball when there is one.
-  With release-gate.sh beside this file; `hard` needs R on the PATH to read CRAN's package database,
+  With release-gate.sh beside this file; both modes need R on the PATH to read CRAN's package database,
   and `report` needs the package's dependencies, rmarkdown, urlchecker and spelling installed.
 
 inputs:
