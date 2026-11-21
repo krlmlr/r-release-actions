@@ -4,8 +4,8 @@ Reusable GitHub workflows and composite actions that take an R package through a
 A package's own workflows call them by a pinned release.
 
 **Status: under construction.**
-The CRAN submission and the release gate are the first workflows; the check that builds the tarball the submission uploads,
-win-builder and the workflow that publishes a release after acceptance follow.
+The CRAN submission, the builder checks and the release gate are the first workflows;
+the check that builds the tarball they use and the workflow that publishes a release after acceptance follow.
 Nothing here is released yet.
 
 ## How a release flows
@@ -171,6 +171,67 @@ Each step writes what it read, checked and did to the run's summary, with how to
   `contents: write` to draft the release, and `pull-requests: write` to report.
   The run needs no secret beyond the workflow's own token.
 
+## Builder checks
+
+[`.github/workflows/builders.yaml`](.github/workflows/builders.yaml) uploads the same checked tarball
+to win-builder and to macbuilder, and reports both on the checklist pull request.
+These checks inform the release and never gate it: the submission neither waits for them nor reads their results.
+Both check on R-devel only; the `actions/builders` action also takes the other flavors, which the workflow does not use.
+The workflow takes the tarball exactly as the submission does, from a green check run of the commit,
+so what the builders check is the file that CRAN receives.
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        type: boolean
+        default: true
+
+jobs:
+  builders:
+    uses: krlmlr/r-release-actions/.github/workflows/builders.yaml@<sha> # vX.Y.Z
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    with:
+      sha: ${{ github.sha }}
+      dry-run: ${{ inputs.dry-run }}
+```
+
+Inputs:
+
+- `sha`, `dry-run`, `check-workflow` and `check-run-id`: as for the CRAN submission.
+- `macbuilder-timeout-minutes`: how long to wait for macbuilder's result, by default 60 and at most 150.
+
+What a run does, job by job:
+
+- **version** reads `Package:` and `Version:` from `DESCRIPTION`, and only warns about the dates,
+  because the builders may run days before the submission.
+  It finds the checklist pull request, and runs on without one.
+- **tarball** finds the check run and its tarball artifact, and verifies the file, as the submission's job of that name does.
+- **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/R-devel/`,
+  as `devtools::check_win_devel()` does, retrying a refused connection or an unresolved host twice.
+  Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
+  A failed upload fails the job.
+- **macbuilder** posts the tarball to `https://mac.r-project.org/macbuilder/v1/submit` for `r-devel`,
+  as `devtools::check_mac_devel()` does,
+  and polls the result page it answers with, once a minute, until the page shows a finished check log or the wait ends.
+  Macbuilder documents no states: a page counts as finished when its check log ends in the `Status:` line,
+  macbuilder's `* result classification:` line and the end of the log, as finished pages do,
+  so that a `Status:` line in a test's output does not end the wait.
+  A check that ends in a note, a warning or an error, a status that is none of `R CMD check`'s, reported as `unknown`
+  with the result page to read, and a wait that ends without a result are reported with a warning,
+  and do not fail the job; a failed upload does.
+- **report**, on a real run with a checklist pull request that nobody cancelled, creates or updates the workflow's one comment there,
+  marked `<!-- release-builders: <package> X.Y.Z -->`: each win-builder upload, and macbuilder's status with a link to its result page.
+- **preview**, on a dry run, shows that comment in the run's summary, with no permission.
+
+A dry run uploads nothing and writes nothing: it verifies the tarball, and reports the URLs and fields a real run would send.
+The calling job grants `actions: read` and `contents: read` to find and download the artifact,
+and `pull-requests: write` to report.
+
 ## Release gate
 
 [`.github/workflows/release-gate.yaml`](.github/workflows/release-gate.yaml) checks that a commit is ready for a CRAN release,
@@ -271,7 +332,7 @@ if it does not, the comment links the run instead of the job.
   so that each action can be tested without a network or a package to release.
   `actions/cran-lib/` holds the shell helpers the scripts and their tests share.
 - The tests run with `for t in actions/*/*-test.sh; do "$t"; done`, against stubs and local servers:
-  they reach neither GitHub nor CRAN.
+  they reach neither GitHub, nor CRAN, nor the builders.
 - A reusable workflow calls this repository's actions at `@main`,
   because a workflow cannot name the commit it is in; every other action is pinned by full SHA.
 

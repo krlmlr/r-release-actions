@@ -10,22 +10,45 @@ description: >
   with release-report.sh beside this file.
   The job needs `pull-requests: read` for `find` and `submitted`, only the repository's metadata, which every token can read,
   for `sync`, and `pull-requests: write` otherwise.
+  Mode `builders` keeps the builder uploads' one comment there, updated in place,
+  and needs no permission on a dry run, which only prints it.
 
 inputs:
   mode:
-    description: "`find`, `submitted`, `status`, `attempt`, `sync` or `gate`"
+    description: "`find`, `submitted`, `status`, `attempt`, `sync`, `builders` or `gate`"
     required: true
   token:
     description: "A token with the permission the mode needs"
     required: true
+  winbuilder-results:
+    description: "`builders`: win-builder's `<flavor>=<uploaded|failed|dry-run>`, separated by spaces"
+    default: ""
+  winbuilder-job:
+    description: "`builders`: the win-builder job's result"
+    default: ""
+  macbuilder-flavor:
+    description: "`builders`: macbuilder's flavor"
+    default: ""
+  macbuilder-url:
+    description: "`builders`: macbuilder's result page"
+    default: ""
+  macbuilder-outcome:
+    description: "`builders`: macbuilder's outcome, `ok`, `note`, `warning`, `error`, `unknown` (a page not understood) or `timeout`"
+    default: ""
+  macbuilder-status:
+    description: "`builders`: the `Status:` line of macbuilder's check"
+    default: ""
+  macbuilder-job:
+    description: "`builders`: the macbuilder job's result"
+    default: ""
   pr:
-    description: "`submitted`, `status`, `attempt`, `sync`, `gate`: the checklist pull request's number"
+    description: "`submitted`, `status`, `attempt`, `sync`, `builders`, `gate`: the checklist pull request's number"
     default: ""
   package:
-    description: "`find`, `submitted`, `attempt`, `sync`, `gate`: the package name"
+    description: "`find`, `submitted`, `attempt`, `sync`, `builders`, `gate`: the package name"
     default: ""
   version:
-    description: "`find`, `submitted`, `attempt`, `sync`, `gate`: the release version"
+    description: "`find`, `submitted`, `attempt`, `sync`, `builders`, `gate`: the release version"
     default: ""
   require:
     description: "`find`: `true` fails without exactly one checklist pull request"
@@ -82,6 +105,13 @@ runs:
   steps:
     - id: run
       env:
+        WINBUILDER_RESULTS: ${{ inputs.winbuilder-results }}
+        WINBUILDER_JOB: ${{ inputs.winbuilder-job }}
+        MACBUILDER_FLAVOR: ${{ inputs.macbuilder-flavor }}
+        MACBUILDER_URL: ${{ inputs.macbuilder-url }}
+        MACBUILDER_OUTCOME: ${{ inputs.macbuilder-outcome }}
+        MACBUILDER_STATUS: ${{ inputs.macbuilder-status }}
+        MACBUILDER_JOB: ${{ inputs.macbuilder-job }}
         GH_TOKEN: ${{ inputs.token }}
         GH_REPO: ${{ github.repository }}
         MODE: ${{ inputs.mode }}
@@ -105,6 +135,7 @@ runs:
       run: |
         script="$GITHUB_ACTION_PATH/release-report.sh"
         case "$MODE" in
+          builders) "$script" builders "$PR" "$PACKAGE" "$VERSION" ;;
           find) "$script" find "$PACKAGE" "$VERSION" ;;
           submitted) "$script" submitted "$PR" "$PACKAGE" "$VERSION" ;;
           status) "$script" status "$PR" "$KEY" "$TITLE" ;;

@@ -18,6 +18,11 @@
 #   status <pr> <key> <title>
 #     The workflow's one comment, found by `<!-- release-report: <key> -->` among github-actions[bot]'s comments,
 #     created or updated in place with the job results in RESULTS and the Markdown in DETAILS.
+#   builders <pr> <package> <version>
+#     The builder uploads' one comment, found by `<!-- release-builders: <package> <version> -->`
+#     among github-actions[bot]'s comments, created or updated in place:
+#     each win-builder flavor's upload from WINBUILDER_RESULTS, and macbuilder's result.
+#     DRY_RUN `true` prints the comment to the log and the step summary, writes nothing, and takes an empty <pr>.
 #   attempt <pr> <package> <version> <sha> <sha256> <tarball name>
 #     A new comment for a submission attempt, which nothing edits afterwards:
 #     the attempt's number, the submitted commit, the tarball's SHA-256, and links to the run and the draft release.
@@ -40,6 +45,11 @@
 #   RESUBMIT, DRY_RUN    `submitted`: `true` lets a version submitted before through, or only warns about it
 #   RESULTS              `status`: one `<job>=<result>` per line, as `needs.<job>.result` gives it
 #   DETAILS              `status`: Markdown appended below the job results, may be empty
+#   WINBUILDER_RESULTS   `builders`: `<flavor>=<uploaded|failed|dry-run>`, separated by spaces; WINBUILDER_JOB its job's result
+#   MACBUILDER_FLAVOR, MACBUILDER_URL, MACBUILDER_OUTCOME, MACBUILDER_STATUS, MACBUILDER_JOB
+#                        `builders`: macbuilder's flavor, result page, outcome (`ok`, `note`, `warning`, `error`, `unknown`, `timeout`),
+#                        `Status:` line, and its job's result
+#   SHA, SHA256          `builders`: the commit and the tarball's SHA-256, may be empty
 #   DRAFT_URL            `attempt`: the draft release
 #   DRY_RUN              `sync`: `true` says the commands apply after a real run
 #   GATE_HARD, GATE_REPORT
@@ -72,6 +82,131 @@ run_url() { printf '%s' "${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/
 bot_comments() { # <pr> <marker>
   "$gh" api --paginate "repos/$repo/issues/$1/comments?per_page=100" \
     --jq ".[] | select(.user.login == \"$bot\" and (.body | startswith(\"$2\"))) | .id"
+}
+
+# Creates, or updates in place, github-actions[bot]'s comment on <pr> that starts with <marker>, from <body file>.
+# <what> names the comment, as in "the workflow's comment"; <stands> says what holds when it cannot be written,
+# as in "the run's results stand". A comment that cannot be read or written fails with GitHub's error.
+upsert_comment() { # <pr> <marker> <body file> <what> <stands>
+  local pr=$1 marker=$2 body=$3 what=$4 stands=$5 id err errf how=Posted
+  errf=$(mktemp)
+  if ! id=$(bot_comments "$pr" "$marker" 2>"$errf"); then
+    err=$(head -n 1 "$errf")
+    rm -f "$errf"
+    fail "Report" "The checklist pull request's comments cannot be read" \
+      "Reading the comments of #$pr failed: $err. The run's summary page has the results." -- \
+      "Check that the calling job grants \`pull-requests: write\`; $stands, and the next run updates the comment."
+  fi
+  id=$(printf '%s\n' "$id" | tail -n 1)
+  if [ -n "$id" ]; then
+    how=Updated
+    "$gh" api -X PATCH "repos/$repo/issues/comments/$id" -F "body=@$body" --jq .html_url 2>"$errf"
+  else
+    "$gh" api -X POST "repos/$repo/issues/$pr/comments" -F "body=@$body" --jq .html_url 2>"$errf"
+  fi || {
+    err=$(head -n 1 "$errf")
+    rm -f "$errf"
+    fail "Report" "${what^} cannot be written" \
+      "Writing the comment on #$pr failed: $err. The run's summary page has the results." -- \
+      "Check that the calling job grants \`pull-requests: write\`; $stands, and the next run updates the comment."
+  }
+  rm -f "$errf"
+  say "$how $what on #$pr."
+}
+
+# The builder uploads' one comment on <pr>: win-builder's uploads, whose results arrive by email,
+# and macbuilder's check result, created or updated in place; DRY_RUN `true` prints it and writes nothing.
+cmd_builders() {
+  [ $# -eq 3 ] || usage
+  local pr=$1 pkg=$2 version=$3
+  { [[ $pr =~ ^[0-9]*$ ]] && valid_package "$pkg" && valid_version "$version"; } || usage
+  [ -n "$pr" ] || [ "${DRY_RUN:-false}" = true ] || usage
+  local marker="<!-- release-builders: $pkg $version -->" overall=success body
+  local wjob=${WINBUILDER_JOB:-} mjob=${MACBUILDER_JOB:-} flavor result line wlines='' mline
+  body=$(mktemp)
+  # shellcheck disable=SC2064  # expand now
+  trap "rm -f '$body'" EXIT
+  for flavor in ${WINBUILDER_RESULTS:-}; do
+    result=${flavor#*=}
+    flavor=${flavor%%=*}
+    case "$result" in
+      uploaded) line="uploaded; the results arrive by email to the maintainer" ;;
+      dry-run) line="not uploaded on a dry run" ;;
+      failed) line="**upload failed**"; overall=failure ;;
+      *) line="$result" ;;
+    esac
+    wlines+="- win-builder \`$flavor\`: $line"$'\n'
+  done
+  if [ -z "$wlines" ]; then
+    wlines="- win-builder: no upload, job \`${wjob:-not run}\`"$'\n'
+    [ "$wjob" = skipped ] || overall=failure
+  else
+    # A job that ended otherwise than by its own verdict, such as a timeout, may not have tried every flavor;
+    # a failed upload fails the job after all of them.
+    case "$wjob" in
+      success | skipped | '') ;;
+      failure) [[ " ${WINBUILDER_RESULTS:-} " == *=failed\ * ]] || {
+        wlines+="- win-builder: job \`$wjob\`, later flavors not tried"$'\n'
+        overall=failure
+      } ;;
+      *) wlines+="- win-builder: job \`$wjob\`, later flavors not tried"$'\n'; overall=failure ;;
+    esac
+  fi
+  local murl=${MACBUILDER_URL:-} mstatus
+  # The status comes from macbuilder's page: no backticks or control characters reach the comment, and at most 200 characters.
+  mstatus=$(printf '%s' "${MACBUILDER_STATUS:-}" | tr -d '\000-\037\177`' | cut -c 1-200)
+  case "${MACBUILDER_OUTCOME:-}" in
+    ok) mline="\`Status: $mstatus\`" ;;
+    note | warning) mline="\`Status: $mstatus\`"; [ "$overall" = failure ] || overall=attention ;;
+    error) mline="**\`Status: $mstatus\`**"; overall=failure ;;
+    timeout) mline="no result yet when the run stopped waiting"; [ "$overall" = failure ] || overall=attention ;;
+    unknown) mline="result page not understood (\`Status: $mstatus\`), read it"; [ "$overall" = failure ] || overall=attention ;;
+    *)
+      if [ "${DRY_RUN:-false}" = true ] && [ "$mjob" = success ]; then
+        mline="not uploaded on a dry run"
+      else
+        mline="**no result**, job \`${mjob:-not run}\`"
+        [ "$mjob" = skipped ] || overall=failure
+      fi
+      ;;
+  esac
+  # An outcome is written when the wait ends; a job that ended otherwise afterwards is named.
+  if [ -n "${MACBUILDER_OUTCOME:-}" ]; then
+    case "$mjob" in
+      success | skipped | '') ;;
+      *) mline+=", job \`$mjob\`"; overall=failure ;;
+    esac
+  fi
+  [ -z "$murl" ] || mline+=", [result page]($murl)"
+  local icon
+  case "$overall" in
+    success) icon="✅" ;;
+    failure) icon="❌" ;;
+    *) icon="⚠️" ;;
+  esac
+  {
+    echo "$marker"
+    echo "### $icon Builder checks: $pkg $version"
+    echo
+    # shellcheck disable=SC2016  # Markdown backticks
+    printf 'Run [#%s](%s) (attempt %s, %s) on `%s`, %s.\n' "${GITHUB_RUN_NUMBER:-0}" "$(run_url)" \
+      "${GITHUB_RUN_ATTEMPT:-1}" "${GITHUB_EVENT_NAME:-}" "${GITHUB_REF_NAME:-}" "$(date -u '+%Y-%m-%d %H:%M UTC')"
+    echo
+    [ -z "${SHA:-}" ] || echo "- Commit: $SHA"
+    [ -z "${SHA256:-}" ] || echo "- Tarball: \`${pkg}_$version.tar.gz\`, SHA-256 \`$SHA256\`"
+    printf '%s' "$wlines"
+    echo "- macbuilder \`${MACBUILDER_FLAVOR:-r-devel}\`: $mline"
+    echo
+    echo "These checks inform the release and do not gate it. Later runs of this workflow update this comment."
+  } >"$body"
+  if [ "${DRY_RUN:-false}" = true ]; then
+    group "Dry run: the comment a real run writes${pr:+ on #$pr}"
+    cat "$body"
+    endgroup
+    summary "### Report: dry run" "" "Nothing was written. A real run writes this comment${pr:+ on #$pr}:" "" '````markdown' "$(cat "$body")" '````' ""
+    return 0
+  fi
+  upsert_comment "$pr" "$marker" "$body" "the builders' comment" "the uploads stand"
 }
 
 cmd_find() {
@@ -215,7 +350,7 @@ cmd_status() {
   [ $# -eq 3 ] || usage
   local pr=$1 key=$2 title=$3
   { [[ $pr =~ ^[0-9]+$ ]] && [[ $key =~ ^[A-Za-z0-9._-]+$ ]]; } || usage
-  local overall=success job result icon body id marker="<!-- release-report: $key -->"
+  local overall=success job result icon body marker="<!-- release-report: $key -->"
   while IFS='=' read -r job result; do
     [ -n "$job" ] || continue
     case "$result" in
@@ -250,22 +385,7 @@ cmd_status() {
     echo
     echo "The run's summary page has the details. Later runs of this workflow update this comment."
   } >"$body"
-  local errf
-  errf=$(mktemp)
-  # shellcheck disable=SC2064  # expand now
-  trap "rm -f '$body' '$errf'" EXIT
-  id=$(bot_comments "$pr" "$marker" 2>"$errf") ||
-    fail "Report" "The checklist pull request's comments cannot be read" \
-      "Reading the comments of #$pr failed: $(head -n 1 "$errf"). The run's summary page has the results." -- \
-      "Check that the calling job grants \`pull-requests: write\`; the run's results stand, and the next run updates the comment."
-  id=$(printf '%s\n' "$id" | tail -n 1)
-  if [ -n "$id" ]; then
-    "$gh" api -X PATCH "repos/$repo/issues/comments/$id" -F "body=@$body" --jq .html_url
-    say "Updated the comment on #$pr."
-  else
-    "$gh" api -X POST "repos/$repo/issues/$pr/comments" -F "body=@$body" --jq .html_url
-    say "Posted a comment on #$pr."
-  fi
+  upsert_comment "$pr" "$marker" "$body" "the workflow's comment" "the run's results stand"
 }
 
 cmd_attempt() {
@@ -404,7 +524,7 @@ cmd_gate() {
   [ $# -eq 3 ] || usage
   local pr=$1 pkg=$2 version=$3
   { [[ $pr =~ ^[0-9]+$ ]] && valid_package "$pkg" && valid_version "$version"; } || usage
-  local marker="<!-- release-report: release-gate -->" job result hard='' checks='' verdict body tmp errf id
+  local marker="<!-- release-report: release-gate -->" job result hard='' checks='' verdict body tmp
   while IFS='=' read -r job result; do
     case "$job" in
       hard) hard=$result ;;
@@ -418,9 +538,8 @@ cmd_gate() {
   esac
   body=$(mktemp)
   tmp=$(mktemp)
-  errf=$(mktemp)
   # shellcheck disable=SC2064  # expand now
-  trap "rm -f '$body' '$tmp' '$errf'" EXIT
+  trap "rm -f '$body' '$tmp'" EXIT
   {
     echo "$marker"
     echo "### $verdict"
@@ -445,24 +564,11 @@ cmd_gate() {
     echo
     echo "The run's summary page has the details. Later runs of the release gate update this comment."
   } >"$body"
-  id=$(bot_comments "$pr" "$marker" 2>"$errf") ||
-    fail "Report" "The checklist pull request's comments cannot be read" \
-      "Reading the comments of #$pr failed: $(head -n 1 "$errf"). The run's summary page has the results." -- \
-      "Check that the calling job grants \`pull-requests: write\`; the gate's results stand, and the next run updates the comment."
-  id=$(printf '%s\n' "$id" | tail -n 1)
-  local how=Posted
-  if [ -n "$id" ]; then
-    how=Updated
-    "$gh" api -X PATCH "repos/$repo/issues/comments/$id" -F "body=@$body" --jq .html_url 2>"$errf"
-  else
-    "$gh" api -X POST "repos/$repo/issues/$pr/comments" -F "body=@$body" --jq .html_url 2>"$errf"
-  fi || fail "Report" "The release gate's comment cannot be written" \
-    "Writing the comment on #$pr failed: $(head -n 1 "$errf"). The run's summary page has the results." -- \
-    "Check that the calling job grants \`pull-requests: write\`; the gate's results stand, and the next run updates the comment."
-  say "$how the release gate's comment on #$pr."
+  upsert_comment "$pr" "$marker" "$body" "the release gate's comment" "the gate's results stand"
 }
 
 case "${1:-}" in
+  builders) shift; cmd_builders "$@" ;;
   find) shift; cmd_find "$@" ;;
   submitted) shift; cmd_submitted "$@" ;;
   status) shift; cmd_status "$@" ;;

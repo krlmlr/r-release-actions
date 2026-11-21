@@ -7,7 +7,9 @@
 #      or by a person with write access, falling back to an owner, member or collaborator;
 #      it ignores one by anyone else, or by a bot from a fork, with a warning, and fails without exactly one when required.
 #   2. `status` posts the workflow's comment, then updates it; a comment with the marker by someone else is left alone;
-#      the overall result is failure when any job failed.
+#      the overall result is failure when any job failed; a comment that cannot be written fails with GitHub's error.
+#      `builders` does the same for the builder uploads' comment, with each upload and macbuilder's result;
+#      a dry run only shows it.
 #   3. `attempt` posts a new comment numbered after the earlier attempts of the version, and edits none;
 #      unreadable comments fail with GitHub's error.
 #   4. `sync` prints, in a fork only, the commands that bring the parent in line, against the remotes `upstream` and `origin`.
@@ -149,6 +151,87 @@ out=$(RESULTS='version=success' run status 8 cran-submission "CRAN submission")
 has "comments that cannot be read fail, with GitHub's error" "$out" \
   "::error title=The checklist pull request's comments cannot be read::Reading the comments of #8 failed: gh: Not Found (HTTP 404)."
 is "and post nothing" "$(cat "$SCRATCH/writes")" ""
+out=$(GH_STUB_FAIL_WRITES=1 RESULTS='version=success' run status 7 cran-submission "CRAN submission")
+has "a comment that cannot be written fails, with GitHub's error" "$out" \
+  "::error title=The workflow's comment cannot be written::Writing the comment on #7 failed: gh: Forbidden (HTTP 403)."
+
+section "builders"
+answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
+  "[$(comment 60 someone '<!-- release-builders: fakepkg 1.0.1 -->\nmine')]"
+out=$(SHA=$SHA SHA256=$TSHA WINBUILDER_RESULTS='R-devel=uploaded R-release=uploaded' WINBUILDER_JOB=success \
+  MACBUILDER_FLAVOR=r-devel MACBUILDER_URL=https://mac.example/macbuilder/results/1-a/ MACBUILDER_OUTCOME=ok \
+  MACBUILDER_STATUS=OK MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+has "it succeeds" "$out" "exit 0"
+w=$(cat "$SCRATCH/writes")
+has "it posts a comment, leaving someone else's alone" "$w" "POST repos/owner/fakepkg/issues/7/comments"
+has "with the marker and the overall result" "$w" "<!-- release-builders: fakepkg 1.0.1 -->
+### ✅ Builder checks: fakepkg 1.0.1"
+has "the tarball" "$w" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, SHA-256 \`$TSHA\`"
+has "each win-builder flavor" "$w" "- win-builder \`R-devel\`: uploaded; the results arrive by email to the maintainer
+- win-builder \`R-release\`: uploaded"
+has "and macbuilder's status, linked" "$w" "- macbuilder \`r-devel\`: \`Status: OK\`, [result page](https://mac.example/macbuilder/results/1-a/)"
+has "saying the checks do not gate" "$w" "These checks inform the release and do not gate it."
+answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
+  "[$(comment 60 someone '<!-- release-builders: fakepkg 1.0.1 -->'), $(comment 61 'github-actions[bot]' '<!-- release-builders: fakepkg 1.0.1 -->\nold'), $(comment 62 'github-actions[bot]' '<!-- release-builders: fakepkg 1.0.0 -->')]"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' MACBUILDER_OUTCOME=note MACBUILDER_STATUS='1 NOTE' MACBUILDER_JOB=success \
+  run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "a later run updates the bot's comment of the version" "$w" "PATCH repos/owner/fakepkg/issues/comments/61"
+has "a NOTE asks for attention" "$w" "### ⚠️ Builder checks: fakepkg 1.0.1"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' MACBUILDER_OUTCOME=timeout MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+has "so does a timeout" "$(cat "$SCRATCH/writes")" "- macbuilder \`r-devel\`: no result yet when the run stopped waiting"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' MACBUILDER_OUTCOME=unknown MACBUILDER_STATUS=$'done `x`\a' \
+  MACBUILDER_URL=https://mac.example/macbuilder/results/1-a/ MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "an unknown outcome asks for attention" "$w" "### ⚠️ Builder checks"
+has "saying the page was not understood, with its link" "$w" \
+  "- macbuilder \`r-devel\`: result page not understood (\`Status: done x\`), read it, [result page](https://mac.example/macbuilder/results/1-a/)"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' MACBUILDER_OUTCOME=note MACBUILDER_STATUS="1 NOTE\`$(printf 'y%.0s' $(seq 300))" \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+has "the status loses its backticks and is cut to 200 characters" "$(cat "$SCRATCH/writes")" \
+  "\`Status: 1 NOTE$(printf 'y%.0s' $(seq 194))\`"
+out=$(WINBUILDER_RESULTS='R-devel=failed R-release=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=error \
+  MACBUILDER_STATUS='1 ERROR' MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "a failed upload or an ERROR is a failure" "$w" "### ❌ Builder checks"
+has "naming the upload" "$w" "- win-builder \`R-devel\`: **upload failed**"
+has "and the status" "$w" "**\`Status: 1 ERROR\`**"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=cancelled MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "a win-builder job cancelled after an upload is a failure" "$w" "### ❌ Builder checks"
+has "naming the job and the flavors it did not try" "$w" "- win-builder \`R-devel\`: uploaded; the results arrive by email to the maintainer
+- win-builder: job \`cancelled\`, later flavors not tried"
+out=$(WINBUILDER_RESULTS='R-devel=failed R-release=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+hasnt "a job failed by a failed upload tried every flavor" "$(cat "$SCRATCH/writes")" "later flavors not tried"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "a job that failed without a failed upload may not have tried every flavor" "$w" "- win-builder: job \`failure\`, later flavors not tried"
+has "and is a failure" "$w" "### ❌ Builder checks"
+out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=success MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=cancelled run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "a macbuilder job that ends otherwise after its outcome is a failure" "$w" "### ❌ Builder checks"
+has "naming the job" "$w" "- macbuilder \`r-devel\`: \`Status: OK\`, job \`cancelled\`"
+out=$(WINBUILDER_JOB=failure MACBUILDER_JOB=failure run builders 7 fakepkg 1.0.1)
+w=$(cat "$SCRATCH/writes")
+has "jobs that failed before uploading are named" "$w" "- win-builder: no upload, job \`failure\`"
+has "both" "$w" "- macbuilder \`r-devel\`: **no result**, job \`failure\`"
+out=$(DRY_RUN=true WINBUILDER_RESULTS='R-devel=dry-run' WINBUILDER_JOB=success MACBUILDER_JOB=success run builders '' fakepkg 1.0.1)
+has "a dry run succeeds without a pull request" "$out" "exit 0"
+is "and writes nothing" "$(cat "$SCRATCH/writes")" ""
+has "it shows the comment in the summary" "$(cat "$SUMMARY")" "- macbuilder \`r-devel\`: not uploaded on a dry run"
+out=$(run builders '' fakepkg 1.0.1)
+has "a real run needs the pull request" "$out" "exit 2"
+out=$(MACBUILDER_JOB=success run builders 8 fakepkg 1.0.1)
+has "comments that cannot be read fail, with GitHub's error" "$out" \
+  "::error title=The checklist pull request's comments cannot be read::Reading the comments of #8 failed: gh: Not Found (HTTP 404)."
+is "and post nothing" "$(cat "$SCRATCH/writes")" ""
+out=$(GH_STUB_FAIL_WRITES=1 MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+has "a comment that cannot be written fails, with GitHub's error" "$out" \
+  "::error title=The builders' comment cannot be written::Writing the comment on #7 failed: gh: Forbidden (HTTP 403)."
 
 section "attempt"
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
