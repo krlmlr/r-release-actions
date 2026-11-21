@@ -8,8 +8,8 @@
 #   version     reads the version, only warning about dates, and finds the checklist pull request, if there is one
 #   tarball     finds the green push or dispatch run of the check workflow on the commit, and its tarball artifact,
 #               exactly as the CRAN submission does
-#   winbuilder  uploads the tarball by anonymous FTP for each win-builder flavor; the results arrive by email
-#   macbuilder  uploads the tarball to macbuilder, and polls its result page until the check ends or the wait times out
+#   winbuilder  uploads the tarball by anonymous FTP to win-builder's R-devel; the results arrive by email
+#   macbuilder  uploads the tarball to macbuilder's r-devel, and polls its result page until the check ends or the wait times out
 #   report      a real run only: creates or updates the builders' one comment on the checklist pull request
 #   preview     a dry run only, with no permission: shows the comment a real run would write
 # A dry run does all of the reading and checking, uploads nothing, and writes nothing: its results are in the run's summary.
@@ -37,16 +37,6 @@ on:
         required: false
         type: string
         default: ""
-      winbuilder-flavors:
-        description: "Win-builder's flavors to upload to, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`"
-        required: false
-        type: string
-        default: R-devel R-release
-      macbuilder-flavor:
-        description: "Macbuilder's flavor, `r-devel` or `r-release`; its form offers only `r-devel` at times"
-        required: false
-        type: string
-        default: r-devel
       macbuilder-timeout-minutes:
         description: "How long to wait for macbuilder's result before reporting it as pending, at most 150"
         required: false
@@ -144,8 +134,8 @@ jobs:
     name: Upload to win-builder
     needs: [version, tarball]
     runs-on: ubuntu-24.04
-    # Three flavors of at most three five-minute attempts each, after the download.
-    timeout-minutes: 60
+    # One flavor of at most three five-minute attempts, after the download.
+    timeout-minutes: 25
     permissions:
       actions: read
     outputs:
@@ -169,7 +159,7 @@ jobs:
         with:
           builder: winbuilder
           tarball: ${{ steps.tarball.outputs.tarball }}
-          flavors: ${{ inputs.winbuilder-flavors }}
+          flavors: R-devel
           dry-run: ${{ inputs.dry-run }}
 
   macbuilder:
@@ -212,7 +202,7 @@ jobs:
         with:
           builder: macbuilder
           tarball: ${{ steps.tarball.outputs.tarball }}
-          flavors: ${{ inputs.macbuilder-flavor }}
+          flavors: r-devel
           timeout-minutes: ${{ inputs.macbuilder-timeout-minutes }}
           dry-run: ${{ inputs.dry-run }}
 
@@ -236,7 +226,7 @@ jobs:
           sha256: ${{ needs.tarball.outputs.sha256 }}
           winbuilder-results: ${{ needs.winbuilder.outputs.results }}
           winbuilder-job: ${{ needs.winbuilder.result }}
-          macbuilder-flavor: ${{ inputs.macbuilder-flavor }}
+          macbuilder-flavor: r-devel
           macbuilder-url: ${{ needs.macbuilder.outputs.url }}
           macbuilder-outcome: ${{ needs.macbuilder.outputs.outcome }}
           macbuilder-status: ${{ needs.macbuilder.outputs.status }}
@@ -263,7 +253,7 @@ jobs:
           sha256: ${{ needs.tarball.outputs.sha256 }}
           winbuilder-results: ${{ needs.winbuilder.outputs.results }}
           winbuilder-job: ${{ needs.winbuilder.result }}
-          macbuilder-flavor: ${{ inputs.macbuilder-flavor }}
+          macbuilder-flavor: r-devel
           macbuilder-job: ${{ needs.macbuilder.result }}
           dry-run: true
           token: ${{ github.token }}

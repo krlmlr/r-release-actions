@@ -176,6 +176,7 @@ Each step writes what it read, checked and did to the run's summary, with how to
 [`.github/workflows/builders.yaml`](.github/workflows/builders.yaml) uploads the same checked tarball
 to win-builder and to macbuilder, and reports both on the checklist pull request.
 These checks inform the release and never gate it: the submission neither waits for them nor reads their results.
+Both check on R-devel only; the `actions/builders` action also takes the other flavors, which the workflow does not use.
 The workflow takes the tarball exactly as the submission does, from a green check run of the commit,
 so what the builders check is the file that CRAN receives.
 
@@ -202,9 +203,6 @@ jobs:
 Inputs:
 
 - `sha`, `dry-run`, `check-workflow` and `check-run-id`: as for the CRAN submission.
-- `winbuilder-flavors`: win-builder's flavors, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`;
-  by default `R-devel R-release`.
-- `macbuilder-flavor`: `r-devel`, the default, or `r-release`; macbuilder's form offers only `r-devel` at times.
 - `macbuilder-timeout-minutes`: how long to wait for macbuilder's result, by default 60 and at most 150.
 
 What a run does, job by job:
@@ -213,14 +211,12 @@ What a run does, job by job:
   because the builders may run days before the submission.
   It finds the checklist pull request, and runs on without one.
 - **tarball** finds the check run and its tarball artifact, and verifies the file, as the submission's job of that name does.
-- **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/<flavor>/`,
-  as `devtools::check_win_devel()` does, retrying a refused connection or an unresolved host twice;
-  a flavor given twice is uploaded once.
+- **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/R-devel/`,
+  as `devtools::check_win_devel()` does, retrying a refused connection or an unresolved host twice.
   Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
-  A failed upload fails the job after the other flavors are tried.
-  The job records each flavor's result as its upload ends, so that a timeout during a later upload still reports the earlier ones.
-- **macbuilder** posts the tarball to `https://mac.r-project.org/macbuilder/v1/submit`,
-  as `devtools::check_mac_devel()` does for `r-devel` and `check_mac_release()` for `r-release`,
+  A failed upload fails the job.
+- **macbuilder** posts the tarball to `https://mac.r-project.org/macbuilder/v1/submit` for `r-devel`,
+  as `devtools::check_mac_devel()` does,
   and polls the result page it answers with, once a minute, until the page shows a finished check log or the wait ends.
   Macbuilder documents no states: a page counts as finished when its check log ends in the `Status:` line,
   macbuilder's `* result classification:` line and the end of the log, as finished pages do,

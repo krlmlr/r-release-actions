@@ -100,7 +100,7 @@ cmd_winbuilder() {
   [ -n "$tarball" ] || usage
   [ ${#flavors[@]} -gt 0 ] ||
     fail "Win-builder" "No win-builder flavor" "No flavor was given, so there is nothing to upload." -- \
-      "Pass at least one of \`R-devel\`, \`R-release\` and \`R-oldrelease\`, separated by spaces, in \`winbuilder-flavors\`."
+      "Pass at least one of \`R-devel\`, \`R-release\` and \`R-oldrelease\`, separated by spaces, in the action's \`flavors\` input."
   local unique=() u seen
   for f in "${flavors[@]}"; do
     seen=''
@@ -195,7 +195,7 @@ cmd_macbuilder() {
   [ -n "$tarball" ] || usage
   [ -n "$flavor" ] ||
     fail "Macbuilder" "No macbuilder flavor" "No flavor was given." -- \
-      "Pass \`r-devel\` or \`r-release\` in \`macbuilder-flavor\`."
+      "Pass \`r-devel\` or \`r-release\` in the action's \`flavors\` input."
   case "$flavor" in
     r-devel | r-release) ;;
     *) fail "Macbuilder" "No macbuilder flavor" "\`$flavor\` is neither \`r-devel\` nor \`r-release\`." -- \
