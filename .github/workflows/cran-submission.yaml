@@ -311,7 +311,7 @@ jobs:
     steps:
       # First, so that a failure to update the status comment cannot lose the record of an attempt.
       - name: Record the attempt in a new comment
-        if: needs.upload.result == 'success'
+        if: always() && needs.upload.result == 'success'
         uses: krlmlr/r-release-actions/actions/release-report@main
         with:
           mode: attempt
