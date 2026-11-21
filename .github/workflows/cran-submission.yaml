@@ -343,7 +343,7 @@ jobs:
             upload=${{ needs.upload.result }}
           details: |
             - Commit: ${{ inputs.sha }}
-            - Tarball: ${{ needs.tarball.outputs.sha256 && format('SHA-256 `{0}`', needs.tarball.outputs.sha256) || 'none found' }}
+            - Tarball: ${{ needs.tarball.outputs.sha256 && format('SHA-256 `{0}`', needs.tarball.outputs.sha256) || 'none found or accepted' }}
             - Check run: ${{ needs.tarball.outputs.run-url || 'none found' }}
             - Draft release: ${{ needs.draft.outputs.release-url || 'none' }}
           token: ${{ github.token }}

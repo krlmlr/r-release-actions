@@ -27,8 +27,10 @@
 #     Writes `tarball` and `sha256` to GITHUB_OUTPUT.
 #   sidecar <json> <json sha256> <tarball> <sha> <package> <version>
 #     The sidecar the check run wrote beside the tarball, a JSON object, has the SHA-256 of its artifact's digest,
-#     says `"recompressed": true`, names `<package>_<version>.tar.gz`, records <sha> as its `commit`,
-#     and records the SHA-256 of <tarball>, the downloaded file.
+#     says `"recompressed": true` with a known `compression` (`pigz -11 -n` or `R CMD build`),
+#     names `<package>_<version>.tar.gz`, records <sha> as its `commit`,
+#     and records the SHA-256 of <tarball>, the downloaded file; each value is compared exactly.
+#     Every failure names the command that dispatches a suitable check run. Needs `jq`.
 #     Writes `compression` to GITHUB_OUTPUT.
 #
 # Environment:
@@ -181,20 +183,28 @@ cmd_find() {
   # The sidecar comes from the same run as the tarball, and the newest of its name, as the tarball is.
   local meta
   meta=$(artifacts_named "$repo" "$found" "$name.json") ||
-    fail "Tarball" "The artifacts cannot be read" "The artifacts of the run $found cannot be read from $repo: $(api_error)." -- \
-      "Check that the job holds \`actions: read\`, then dispatch the submission again."
+    fail "Tarball" "The tarball metadata cannot be listed" \
+      "The artifacts \`$name.json\` of the run $found cannot be read from $repo: $(api_error). Nothing was drafted or uploaded." -- \
+      "Check that the job holds \`actions: read\`, then dispatch the submission again." \
+      "$(dispatch_advice)"
   [ -n "$meta" ] ||
     fail "Tarball" "No tarball metadata" \
       "The run $found of \`$workflow\` holds \`$name\` but no unexpired artifact \`$name.json\`, so it was not built for a CRAN submission: $run_url. Nothing was drafted or uploaded." -- \
       "$(dispatch_advice)" \
       "A check workflow that writes no sidecar predates the recompressed tarball; update it from the package template."
+  if [ "$(count_lines "$meta")" -gt 1 ]; then
+    say "  The run $found holds $(count_lines "$meta") artifacts named $name.json, from re-runs; taking the newest:"
+    sed -n '1s/^\([0-9]*\) [^ ]* \(.*\)$/    chosen:  \1 (created \2)/p; 2,$s/^\([0-9]*\) [^ ]* \(.*\)$/    skipped: \1 (created \2)/p' <<<"$meta"
+  fi
   meta=$(head -n 1 <<<"$meta")
   meta=${meta% *}
   local meta_id=${meta%% *} meta_digest=${meta#* }
   local meta_sha256=${meta_digest#sha256:}
   [[ $meta_sha256 =~ ^[0-9a-f]{64}$ ]] ||
-    fail "Tarball" "The tarball metadata has no SHA-256 digest" "The artifact $meta_id of run $found has the digest \`$meta_digest\`." -- \
-      "The check workflow uploads the sidecar with \`actions/upload-artifact\` v7 or later and \`archive: false\`, which records the file's SHA-256."
+    fail "Tarball" "The tarball metadata has no SHA-256 digest" \
+      "The artifact $meta_id of run $found has the digest \`$meta_digest\`. Nothing was drafted or uploaded." -- \
+      "The check workflow uploads the sidecar with \`actions/upload-artifact\` v7 or later and \`archive: false\`, which records the file's SHA-256." \
+      "$(dispatch_advice)"
   summary "- Metadata: \`$name.json\`, id $meta_id" ""
   output metadata-artifact-id "$meta_id" metadata-sha256 "$meta_sha256" artifact-ids "$artifact_id,$meta_id"
 }
@@ -268,50 +278,64 @@ cmd_sidecar() {
   [ $# -eq 6 ] || usage
   local json=$1 expected=$2 tarball=$3 sha=$4 pkg=$5 version=$6
   { valid_sha "$sha" && valid_package "$pkg" && valid_version "$version"; } || usage
-  local name="${pkg}_${version}.tar.gz" actual
+  local name="${pkg}_${version}.tar.gz" actual work
+  work=$(mktemp -d)
+  # shellcheck disable=SC2064  # expand now
+  trap "rm -rf '$work' '$apierr'" EXIT
   group "Metadata: $name.json"
-  [ -f "$json" ] || fail "Metadata" "No tarball metadata downloaded" "The download left no \`$name.json\`. Nothing was drafted or uploaded." -- \
-    "The check workflow uploads the sidecar as a raw file with \`archive: false\`, named \`$name.json\`." \
-    "Dispatch the submission again; if this persists, $(dispatch_command)."
+  command -v jq >/dev/null ||
+    fail "Metadata" "jq is missing" "Reading \`$name.json\` needs \`jq\`, which is not on the PATH. Nothing was drafted or uploaded." -- \
+      "Run the submission on a GitHub-hosted Ubuntu runner, which has \`jq\`, or install it before this step."
+  [ -f "$json" ] ||
+    fail "Metadata" "No tarball metadata downloaded" "The download left no \`$name.json\`. Nothing was drafted or uploaded." -- \
+      "The check workflow uploads the sidecar as a raw file with \`archive: false\`, named \`$name.json\`." \
+      "$(dispatch_advice)"
   actual=$(sha256_of "$json")
   [ "$actual" = "$expected" ] ||
     fail "Metadata" "The tarball metadata is not the uploaded one" \
       "The downloaded \`$name.json\` has the SHA-256 \`$actual\`, and its artifact's digest is \`$expected\`. Nothing was drafted or uploaded." -- \
-      "Dispatch the submission again; if this persists, $(dispatch_command)."
-  jq -e 'type == "object"' "$json" >/dev/null 2>&1 ||
-    fail "Metadata" "The tarball metadata cannot be read" "\`$name.json\` is no JSON object. Nothing was drafted or uploaded." -- \
-      "Check the artifact the check workflow uploaded."
-  local m_name m_sha256 m_commit m_recompressed m_compression
-  m_recompressed=$(jq -c '.recompressed' "$json")
-  m_compression=$(jq -r '.compression // "" | tostring' "$json")
-  m_name=$(jq -r '.name // "" | tostring' "$json")
-  m_commit=$(jq -r '.commit // "" | tostring' "$json")
-  m_sha256=$(jq -r '.sha256 // "" | tostring' "$json")
-  val "recompressed" "$m_recompressed"
-  val "compression" "$m_compression"
-  val "name" "$m_name"
-  val "commit" "$m_commit"
-  val "sha256" "$m_sha256"
-  [ "$m_recompressed" = true ] ||
+      "Dispatch the submission again." \
+      "$(dispatch_advice)"
+  jq -e 'type == "object"' "$json" >/dev/null 2>"$work/err" ||
+    fail "Metadata" "The tarball metadata cannot be read" "\`$name.json\` is no JSON object. Nothing was drafted or uploaded." "$work/err" -- \
+      "Check the artifact the check workflow uploaded." \
+      "$(dispatch_advice)"
+  # Values are shown as JSON, so that a newline or a quote in one is visible; they are compared exactly, inside jq.
+  field() { jq -c --arg f "$1" '.[$f]' "$json"; }
+  check() { jq -e "$@" "$json" >/dev/null; }
+  local f
+  for f in recompressed compression name commit sha256; do val "$f" "$(field "$f")"; done
+  check '.recompressed == true' ||
     fail "Metadata" "The tarball is not recompressed" \
-      "\`$name.json\` records \`\"recompressed\": $m_recompressed\` (\`$m_compression\`): the check run was not dispatched with \`cran-submission\` on. Nothing was drafted or uploaded." -- \
+      "\`$name.json\` records \`\"recompressed\": $(field recompressed)\` and the compression $(field compression): the check run was not dispatched with \`cran-submission\` on. Nothing was drafted or uploaded." -- \
       "$(dispatch_advice)" \
       "Or pass \`check-run-id\` for a green run of this commit dispatched that way, when a newer run without it holds a tarball too."
-  [ "$m_name" = "$name" ] ||
-    fail "Metadata" "The tarball metadata is of another file" "\`$name.json\` names \`$m_name\`, and the release is \`$name\`. Nothing was drafted or uploaded." -- \
-      "Check the sidecar the check workflow wrote; it names the tarball it describes."
-  [ "$m_commit" = "$sha" ] ||
+  check '.compression == "pigz -11 -n" or .compression == "R CMD build"' ||
+    fail "Metadata" "The tarball metadata names an unknown compression" \
+      "\`$name.json\` records the compression $(field compression), neither \`\"pigz -11 -n\"\` nor \`\"R CMD build\"\`. Nothing was drafted or uploaded." -- \
+      "Check the sidecar the check workflow wrote, and update the check workflow from the package template." \
+      "$(dispatch_advice)"
+  # shellcheck disable=SC2016  # a jq variable
+  check --arg v "$name" '.name == $v' ||
+    fail "Metadata" "The tarball metadata is of another file" \
+      "\`$name.json\` names $(field name), and the release is \`$name\`. Nothing was drafted or uploaded." -- \
+      "Check the sidecar the check workflow wrote; it names the tarball it describes." \
+      "$(dispatch_advice)"
+  # shellcheck disable=SC2016  # a jq variable
+  check --arg v "$sha" '.commit == $v' ||
     fail "Metadata" "The tarball metadata is of another commit" \
-      "\`$name.json\` records the commit \`$m_commit\`, and the submission is of \`$sha\`. Nothing was drafted or uploaded." -- \
+      "\`$name.json\` records the commit $(field commit), and the submission is of \`$sha\`. Nothing was drafted or uploaded." -- \
       "$(dispatch_advice)"
   actual=$(sha256_of "$tarball")
-  [ "$m_sha256" = "$actual" ] ||
+  # shellcheck disable=SC2016  # a jq variable
+  check --arg v "$actual" '.sha256 == $v' ||
     fail "Metadata" "The tarball does not match its metadata" \
-      "\`$name.json\` records the SHA-256 \`$m_sha256\`, and the downloaded \`$name\` has \`$actual\`. Nothing was drafted or uploaded." -- \
+      "\`$name.json\` records the SHA-256 $(field sha256), and the downloaded \`$name\` has \`$actual\`; a re-run of the check may have uploaded the newer of the two only. Nothing was drafted or uploaded." -- \
+      "Dispatch the submission again, which takes the newest of each artifact in the run." \
       "$(dispatch_advice)"
   endgroup
-  summary "- Metadata: \`$name\` was recompressed with \`$m_compression\` from \`${sha:0:10}\`, and has the SHA-256 the sidecar records." ""
-  output compression "$m_compression"
+  summary "- Metadata: \`$name\` was recompressed with \`pigz -11 -n\` from \`${sha:0:10}\`, and has the SHA-256 the sidecar records." ""
+  output compression "$(jq -r '.compression' "$json")"
 }
 
 case "${1:-}" in

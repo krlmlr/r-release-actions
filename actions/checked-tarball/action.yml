@@ -56,16 +56,25 @@ outputs:
   artifact-id:
     description: "The artifact's ID"
     value: ${{ steps.find.outputs.artifact-id || inputs.artifact-id }}
+  # Empty when the sidecar step failed, so that a later report does not show a refused tarball as taken.
   tarball:
     description: "The path of the verified tarball"
-    value: ${{ steps.verify.outputs.tarball }}
+    value: ${{ steps.sidecar.outcome != 'failure' && steps.verify.outputs.tarball || '' }}
   sha256:
     description: "The tarball's SHA-256"
-    value: ${{ steps.verify.outputs.sha256 }}
+    value: ${{ steps.sidecar.outcome != 'failure' && steps.verify.outputs.sha256 || '' }}
+  compression:
+    description: "With `require-recompressed`, the compression the sidecar records, `pigz -11 -n`"
+    value: ${{ steps.sidecar.outputs.compression }}
 
 runs:
   using: "composite"
   steps:
+    - if: inputs.artifact-id != '' && inputs.require-recompressed == 'true'
+      run: |
+        echo "::warning title=require-recompressed ignored::With artifact-id, the sidecar is not checked; the tarball is verified against the given sha256, which the job that found the artifact checked against the sidecar."
+      shell: bash
+
     - id: find
       if: inputs.artifact-id == ''
       env:
