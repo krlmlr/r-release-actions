@@ -364,16 +364,24 @@ Inputs:
 
 What a run does:
 
-- It lists the draft releases whose notes carry the submission marker `<!-- cran-submission: <package> X.Y.Z -->`
-  and whose tag name is `vX.Y.Z`, and stops when there is none.
-- It reads the source index of Posit's package manager, `https://packagemanager.posit.co/cran/latest/src/contrib/PACKAGES.gz`, once.
+- It lists the releases whose notes carry the submission marker `<!-- cran-submission: <package> X.Y.Z -->`
+  and whose tag name is `vX.Y.Z`: every draft, and every published release whose checklist pull request is still open,
+  which an earlier run left unfinished.
+  It stops when there is none, and fails before writing anything when the releases, the open pull requests
+  or the repository's default branch cannot be read.
+- For the drafts, it reads the source index of Posit's package manager,
+  `https://packagemanager.posit.co/cran/latest/src/contrib/PACKAGES.gz`, once.
   That is the test `fledge:::release_after_cran_built_binaries()` made, and a listing there also means the binaries are on their way.
   A version the index does not list yet is a line in the run's summary, and the run stays green.
-- For a version the index lists, it takes these steps in order, and stops at the first that fails:
-  - **compare**: it downloads CRAN's tarball of the version, from `src/contrib/` or `src/contrib/Archive/<package>/`,
+  A later version in the index counts too, so that a draft left behind by a missed run still finishes.
+- For a draft whose version the index lists, it takes these steps in order, and stops at the first that fails:
+  - **compare**: it checks that the draft's target is a full commit SHA, as the submission writes it,
+    and that `DESCRIPTION` there carries the package and the version.
+    It downloads CRAN's tarball of the version, from `src/contrib/` or `src/contrib/Archive/<package>/`,
     and the draft's asset `<package>_X.Y.Z.tar.gz`, checked against the digest GitHub records.
-    The two must hold the same files with the same contents,
-    but for CRAN's `MD5` file and the fields CRAN adds to `DESCRIPTION`, `Repository` and `Date/Publication`.
+    The two must hold the same paths, of the same types and executable bits, with the same contents,
+    but for CRAN's `MD5` file and the fields CRAN adds to `DESCRIPTION`, `Repository` and `Date/Publication`;
+    symbolic links are compared as links.
     A difference refuses the tag and fails the run, because CRAN then accepted another upload than the draft records,
     as when a stale confirmation link from an earlier attempt was followed.
     A draft without that asset, or several drafts of the version, fail as well.
@@ -394,17 +402,23 @@ What a run does:
       a merge or a push that the default branch's protection refuses;
       and a release pull request from another repository or into another branch.
       On the fast path the empty checklist pull request then stays open until the bump lands.
+- For a published release whose checklist pull request is open, it checks that the tag is on the release's target,
+  and takes the **finish** step alone.
 - For each accepted version it keeps one comment on the checklist pull request, marked `<!-- release-status: <package> X.Y.Z -->`:
   what it checked and wrote, and what is left, with the commands that do it.
   Without a checklist pull request it tags and publishes, warns, and leaves the rest to the maintainer.
 
 A merge or a push made with the workflow's own token starts no workflows on the default branch, so none runs there until its next push.
-A run is idempotent: a tag on the target, a branch that carries the bump and a branch that holds the default branch already count as done,
-and a published release is no draft, so the next run does not list it again.
-A failure after publishing, which leaves the release pull request open, is in the comment, and the maintainer takes it from there.
+A run is idempotent: a tag on the target, a published release, a branch that carries the bump
+and a branch that holds the default branch already count as done.
+A run that stops after publishing, even one killed before its comment, leaves the checklist pull request open,
+so the next run lists the published release and finishes it.
+The bump checks that the branch it writes to carries the released version, or its bump, and hands over otherwise.
 A dry run holds the same token, because only a token that can write sees draft releases, and writes nothing:
 its summary shows what a real run would tag, publish, commit, merge and close, and the comment it would write.
 The run checks out nothing and runs none of the package's code.
+Its downloads are bounded so that one accepted draft fits well within the job's 30 minutes,
+and one run per repository runs at a time, never cancelled.
 The calling job grants `contents: write` to tag, publish and commit, and `pull-requests: write` to merge, close and comment.
 
 ### The development bump

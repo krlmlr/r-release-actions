@@ -13,7 +13,12 @@
 #      where the branch refuses the push, the bump is handed over and the pull request stays open.
 #   6. A merge of the default branch that conflicts is handed over after the tag and the release, and the run stays green.
 #   7. A tag on the target is kept, a tag elsewhere fails, and a draft without its tarball fails.
-#   8. `compare` ignores the MD5 file and the fields CRAN adds to DESCRIPTION.
+#   8. A target that is no SHA or carries another version fails; a later version on P3M still finishes an older draft;
+#      a release branch that does not reach the target, one from a fork, or one carrying another version is handed over;
+#      the default branch or the open pull requests that cannot be read fail before any write.
+#   9. A published release whose checklist pull request is open is finished by the next run, after a kill
+#      between publishing and commenting or after a partial finish, and one whose pull request is closed is left alone.
+#  10. `compare` ignores the MD5 file and the fields CRAN adds to DESCRIPTION, and counts executable bits.
 #
 # Usage:
 #   actions/release-status/release-status-test.sh
@@ -93,6 +98,8 @@ order() { grep -E '^(POST|PATCH|PUT|DELETE) ' "$SCRATCH/writes" | cut -d' ' -f1-
 
 NEWS_REL=$'# fakepkg 1.0.1 (2026-11-02)\n\n- Fix.\n\n# fakepkg 1.0.0\n\n- First.\n'
 answer "$R/releases?per_page=100" "[{\"id\": 3, \"tag_name\": \"v1.0.0\", \"draft\": false, \"body\": \"<!-- cran-submission: fakepkg 1.0.0 -->\"}]"
+answer "$R/pulls?state=open&per_page=100" '[]'
+answer "$R" '{"default_branch": "main"}'
 
 section "no draft"
 out=$(run)
@@ -115,9 +122,9 @@ p3m_lists 1.0.1
 MARK='<!-- release-checklist: fakepkg 1.0.1 -->'
 answer "$R/pulls?state=open&per_page=100" "[{\"number\": 12, \"author_association\": \"OWNER\", \"user\": {\"login\": \"maint\", \"type\": \"User\"}, \"head\": {\"repo\": {\"full_name\": \"owner/fakepkg\"}}, \"body\": \"$MARK\\n# Release\"}]"
 answer "$R/collaborators/maint/permission" '{"permission": "admin"}'
-answer "$R" '{"default_branch": "main"}'
 answer "$R/git/matching-refs/tags/v1.0.1" '[{"ref": "refs/tags/v1.0.10"}]'
 answer "$R/contents/NEWS.md?ref=$SHA" "{\"content\": \"$(b64 "$NEWS_REL")\"}"
+answer "$R/contents/DESCRIPTION?ref=$SHA" "{\"content\": \"$(b64 $'Package: fakepkg\nVersion: 1.0.1\nDate: 2026-11-02\n')\"}"
 answer "POST $R/git/tags" '{"sha": "7a67a67a67a67a67a67a67a67a67a67a67a67a67"}'
 answer "POST $R/git/refs" '{"ref": "refs/tags/v1.0.1"}'
 answer "$R/pulls/12" '{"changed_files": 3, "head": {"ref": "release-1.0.1", "repo": {"full_name": "owner/fakepkg"}}, "base": {"ref": "main"}}'
@@ -262,9 +269,120 @@ out=$(run)
 has "they fail" "$out" "::error title=Several drafts of fakepkg 1.0.1::"
 hasnt "and nothing is tagged" "$(order)" "git/tags"
 
+answer "$R/releases?per_page=100" "[$(draft 7 v1.0.1 fakepkg_1.0.1.tar.gz "sha256:$DSHA")]"
+DESC_REL=$(b64 $'Package: fakepkg\nVersion: 1.0.1\nDate: 2026-11-02\n')
+
+section "a draft whose target is no SHA"
+answer "$R/releases?per_page=100" "[$(draft 7 v1.0.1 fakepkg_1.0.1.tar.gz "sha256:$DSHA" | sed "s/$SHA/main/")]"
+out=$(run)
+has "it fails" "$out" "::error title=The draft's target is no commit::"
+is "it writes only the comment" "$(order)" "POST $R/issues/12/comments"
+answer "$R/releases?per_page=100" "[$(draft 7 v1.0.1 fakepkg_1.0.1.tar.gz "sha256:$DSHA")]"
+
+section "a draft whose target carries another version"
+answer "$R/contents/DESCRIPTION?ref=$SHA" "{\"content\": \"$(b64 $'Package: fakepkg\nVersion: 1.0.0\n')\"}"
+out=$(run)
+has "it fails" "$out" "::error title=The draft's target is not fakepkg 1.0.1::"
+is "it writes only the comment" "$(order)" "POST $R/issues/12/comments"
+answer "$R/contents/DESCRIPTION?ref=$SHA" "{\"content\": \"$DESC_REL\"}"
+
+section "P3M lists a later version"
+p3m_lists 1.0.2
+out=$(run --dry-run)
+has "an older draft still finishes" "$out" "exit 0"
+has "saying so" "$(cat "$SUMMARY")" "P3M lists fakepkg 1.0.2, later than 1.0.1"
+has "and it would publish" "$(cat "$SUMMARY")" "Would publish the draft"
+p3m_lists 1.0.1
+
+section "a release branch that does not reach the released commit"
+answer "$R/compare/$SHA...release-1.0.1" '{"status": "diverged"}'
+out=$(run)
+has "the run stays green" "$out" "exit 0"
+is "it tags, publishes and comments, and merges nothing" "$(order)" \
+  "POST $R/git/tags|POST $R/git/refs|PATCH $R/releases/7|POST $R/issues/12/comments"
+has "the comment hands the merge over" "$(cat "$SCRATCH/writes")" "does not reach the released commit"
+answer "$R/compare/$SHA...release-1.0.1" '{"status": "ahead"}'
+
+section "a release pull request from a fork"
+answer "$R/pulls/12" '{"changed_files": 3, "head": {"ref": "release-1.0.1", "repo": {"full_name": "fork/fakepkg"}}, "base": {"ref": "main"}}'
+out=$(run)
+has "the run stays green" "$out" "exit 0"
+is "it merges nothing" "$(order)" "POST $R/git/tags|POST $R/git/refs|PATCH $R/releases/7|POST $R/issues/12/comments"
+has "the comment says why" "$(cat "$SCRATCH/writes")" "merges \`fork/fakepkg:release-1.0.1\` into \`main\`"
+answer "$R/pulls/12" '{"changed_files": 3, "head": {"ref": "release-1.0.1", "repo": {"full_name": "owner/fakepkg"}}, "base": {"ref": "main"}}'
+
+section "a release branch that carries another version"
+answer "$R/contents/DESCRIPTION?ref=$HEAD" "{\"content\": \"$(b64 $'Package: fakepkg\nVersion: 1.0.2.9000\n')\"}"
+out=$(run)
+has "the run stays green" "$out" "exit 0"
+hasnt "nothing is bumped or merged" "$(order)" "pulls/12/merge"
+has "the comment says why" "$(cat "$SCRATCH/writes")" "carries fakepkg 1.0.2.9000, not 1.0.1 or 1.0.1.9000"
+answer "$R/contents/DESCRIPTION?ref=$HEAD" "{\"content\": \"$DESC_REL\"}"
+
+section "the default branch cannot be read"
+answer_fail "$R" "gh: Server Error (HTTP 500)"
+out=$(run)
+has "it fails" "$out" "::error title=The default branch cannot be read::"
+is "it writes nothing" "$(cat "$SCRATCH/writes")" ""
+answer_fail "$R" ""
+
+section "the open pull requests cannot be read"
+answer_fail "$R/pulls?state=open&per_page=100" "gh: Server Error (HTTP 500)"
+out=$(run)
+has "it fails" "$out" "::error title=The open pull requests cannot be listed::"
+is "it writes nothing" "$(cat "$SCRATCH/writes")" ""
+answer_fail "$R/pulls?state=open&per_page=100" ""
+
+published() { # <id> <tag>
+  printf '{"id": %s, "tag_name": "%s", "draft": false, "target_commitish": "%s", "html_url": "https://github.example/owner/fakepkg/releases/%s", "body": "- Fix.\\n\\n<!-- cran-submission: fakepkg %s -->", "assets": []}' \
+    "$1" "$2" "$SHA" "$1" "${2#v}"
+}
+answer "$R/releases?per_page=100" "[$(published 7 v1.0.1)]"
+answer "$R/git/matching-refs/tags/v1.0.1" '[{"ref": "refs/tags/v1.0.1"}]'
+answer "$R/commits/refs/tags/v1.0.1" "{\"sha\": \"$SHA\"}"
+
+section "a run killed between publishing and commenting"
+out=$(run)
+has "the next run succeeds" "$out" "exit 0"
+is "it finishes the release without tagging or publishing again" "$(order)" \
+  "POST $R/merges|POST $R/git/blobs|POST $R/git/blobs|POST $R/git/trees|POST $R/git/commits|PATCH $R/git/refs/heads/release-1.0.1|PUT $R/pulls/12/merge|POST $R/issues/12/comments"
+has "the comment says it resumed" "$(cat "$SCRATCH/writes")" "is published already, and its checklist pull request is still open"
+hasnt "and publishes nothing" "$(cat "$SCRATCH/output")" "published"
+
+section "a rerun after a partial finish"
+answer "POST $R/merges" '{}'
+answer "$R/contents/DESCRIPTION?ref=$HEAD" "{\"content\": \"$(b64 $'Package: fakepkg\nVersion: 1.0.1.9000\n')\"}"
+answer "$R/contents/NEWS.md?ref=$HEAD" "{\"content\": \"$(b64 $'# fakepkg (development version)\n\nChanges since v1.0.1: <x>\n\n'"$NEWS_REL")\"}"
+out=$(run)
+has "it succeeds" "$out" "exit 0"
+is "it only merges the pull request and comments" "$(order)" "POST $R/merges|PUT $R/pulls/12/merge|POST $R/issues/12/comments"
+has "at the branch's head" "$(cat "$SCRATCH/writes")" "sha=$HEAD"
+has "saying what was done before" "$(cat "$SCRATCH/writes")" "\`release-1.0.1\` carries the development bump already"
+
+section "a published release whose tag is elsewhere"
+answer "$R/commits/refs/tags/v1.0.1" "{\"sha\": \"$HEAD\"}"
+out=$(run)
+has "it fails" "$out" "::error title=The tag v1.0.1 is not on the release's target::"
+is "it writes only the comment" "$(order)" "POST $R/issues/12/comments"
+
+section "a published release whose checklist pull request is closed"
+answer "$R/pulls?state=open&per_page=100" '[]'
+out=$(run)
+has "is done" "$out" "nothing to do"
+is "it writes nothing" "$(cat "$SCRATCH/writes")" ""
+
 section "compare"
 cran_tarball 'f <- function() 1'
 succeeds "the tarballs match but for what CRAN writes" "$HERE/release-status.sh" compare "$SRV/cran/src/contrib/fakepkg_1.0.1.tar.gz" "$DRAFT"
+chmod +x "$SCRATCH/cranpkg/fakepkg/R/f.R"
+tar -czf "$SCRATCH/other.tar.gz" -C "$SCRATCH/cranpkg" fakepkg
+out=$("$HERE/release-status.sh" compare "$SCRATCH/other.tar.gz" "$DRAFT" || echo "exit $?")
+has "an executable bit counts" "$out" "fakepkg/R/f.R	f x"
+has "as a difference" "$out" "exit 1"
+echo 'not a tarball' >"$SCRATCH/broken.tar.gz"
+out=$("$HERE/release-status.sh" compare "$SCRATCH/broken.tar.gz" "$DRAFT" 2>&1 || echo "exit $?")
+has "a tarball that cannot be unpacked is an error" "$out" "exit 2"
+cran_tarball 'f <- function() 1'
 printf 'Packaged: another day\n' >>"$SCRATCH/cranpkg/fakepkg/DESCRIPTION"
 tar -czf "$SCRATCH/other.tar.gz" -C "$SCRATCH/cranpkg" fakepkg
 fails "a field CRAN does not write counts" "$HERE/release-status.sh" compare "$SCRATCH/other.tar.gz" "$DRAFT"
