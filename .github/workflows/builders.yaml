@@ -8,7 +8,8 @@
 #   version     reads the version, only warning about dates, and finds the checklist pull request, if there is one
 #   tarball     finds the green push or dispatch run of the check workflow on the commit, and its tarball artifact,
 #               exactly as the CRAN submission does
-#   winbuilder  uploads the tarball by anonymous FTP to win-builder's R-devel; the results arrive by email
+#   winbuilder  uploads the tarball by anonymous FTP to each win-builder queue in `queues`, R-devel by default;
+#               the results arrive by email
 #   macbuilder  uploads the tarball to macbuilder's r-devel, and polls its result page until the check ends or the wait times out
 #   report      a real run only: creates or updates the builders' one comment on the checklist pull request
 #   preview     a dry run only, with no permission: shows the comment a real run would write
@@ -37,6 +38,11 @@ on:
         required: false
         type: string
         default: ""
+      queues:
+        description: "The win-builder queues to upload to, separated by spaces: `R-devel`, `R-release`, `R-oldrelease`"
+        required: false
+        type: string
+        default: R-devel
       macbuilder-timeout-minutes:
         description: "How long to wait for macbuilder's result before reporting it as pending, at most 150"
         required: false
@@ -134,8 +140,8 @@ jobs:
     name: Upload to win-builder
     needs: [version, tarball]
     runs-on: ubuntu-24.04
-    # One flavor of at most three five-minute attempts, after the download.
-    timeout-minutes: 25
+    # Up to three queues, each of at most three five-minute attempts, after the download.
+    timeout-minutes: 55
     permissions:
       actions: read
     outputs:
@@ -159,7 +165,7 @@ jobs:
         with:
           builder: winbuilder
           tarball: ${{ steps.tarball.outputs.tarball }}
-          flavors: R-devel
+          flavors: ${{ inputs.queues }}
           dry-run: ${{ inputs.dry-run }}
 
   macbuilder:

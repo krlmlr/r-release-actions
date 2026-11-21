@@ -1,0 +1,34 @@
+name: "Development bump"
+description: >
+  Writes the development bump that follows a CRAN release into the package's checkout:
+  `Version: X.Y.Z.9000` in DESCRIPTION, and a development section with the compare link from `vX.Y.Z` at the top of NEWS.md,
+  with dev-bump.sh beside this file. It commits nothing.
+  The release status workflow runs the same script on the files it commits.
+
+inputs:
+  path:
+    description: "The package's checkout"
+    default: "."
+  branch:
+    description: "The branch the compare link ends at; empty takes the repository's default branch"
+    default: ""
+
+outputs:
+  version:
+    description: "The development version"
+    value: ${{ steps.run.outputs.version }}
+  changed:
+    description: "`true` when the files changed, `false` when they carried the bump already"
+    value: ${{ steps.run.outputs.changed }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: run
+      env:
+        PACKAGE_DIR: ${{ inputs.path }}
+        REPO: ${{ github.repository }}
+        BRANCH: ${{ inputs.branch || github.event.repository.default_branch || 'main' }}
+      run: |
+        "$GITHUB_ACTION_PATH/dev-bump.sh" "$PACKAGE_DIR" "$REPO" "$BRANCH"
+      shell: bash

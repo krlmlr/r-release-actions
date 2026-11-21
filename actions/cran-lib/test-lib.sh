@@ -31,6 +31,8 @@ section() { printf '\n== %s\n' "$1"; }
 # A `gh` stub on the PATH that answers `gh api` offline: nothing reaches GitHub.
 # A GET of <path> answers from $API/<path>.json, a write from $API/<METHOD> <path>.json or `{}`,
 # with `/?=&:,` in the path replaced by `_`, and applies `--jq` to the answer; a missing file is a 404.
+# A GET answers from $API/<path>.raw unchanged where that exists, as for a download;
+# a call fails with the contents of $API/<METHOD> <path>.fail on stderr where that exists, as for an HTTP error.
 # Every call goes to $SCRATCH/gh.log, every write to $SCRATCH/writes as `<METHOD> <path>`,
 # with each `-f`/`-F` field after it, `body=@<file>` as the file's contents.
 gh_stub() {
@@ -60,6 +62,15 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$method" ] || if [ ${#fields[@]} -gt 0 ]; then method=POST; else method=GET; fi
 key=$(printf '%s' "$path" | tr '/?=&:,' '______')
+if [ -f "$API/$method $key.fail" ]; then
+  [ "$method" = GET ] || { echo "$method $path"; for f in "${fields[@]+"${fields[@]}"}"; do printf '  %s\n' "$f"; done; } >>"$SCRATCH/writes"
+  cat "$API/$method $key.fail" >&2
+  exit 1
+fi
+if [ "$method" = GET ] && [ -f "$API/$key.raw" ]; then
+  cat "$API/$key.raw"
+  exit 0
+fi
 if [ "$method" = GET ]; then
   file=$API/$key.json
   [ -f "$file" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
@@ -79,6 +90,19 @@ answer() { # <path> <json>
   local key
   key=$(printf '%s' "$1" | tr '/?=&:,' '______')
   printf '%s\n' "$2" >"$API/$key.json"
+}
+# Makes a GET of a path answer with a file's bytes, unchanged.
+answer_raw() { # <path> <file>
+  local key
+  key=$(printf '%s' "$1" | tr '/?=&:,' '______')
+  cp "$2" "$API/$key.raw"
+}
+# Makes a call (`<METHOD> <path>`, or a GET of `<path>`) fail with <message> on stderr; an empty <message> removes that.
+answer_fail() { # <method path> <message>
+  local key
+  key=$(printf '%s' "$1" | tr '/?=&:,' '______')
+  case "$1" in *' '*) ;; *) key="GET $key" ;; esac
+  if [ -n "$2" ]; then printf '%s\n' "$2" >"$API/$key.fail"; else rm -f "$API/$key.fail"; fi
 }
 
 done_testing() {

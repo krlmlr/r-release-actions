@@ -1,0 +1,52 @@
+# Finishes an R package's CRAN releases once CRAN has accepted them, as Posit's package manager shows.
+# A package calls it on a schedule, nightly, and on dispatch; the README describes the inputs, the permissions
+# the caller grants, and what the run reads and writes.
+#
+# One job, `status`, with the actions/release-status action: for each draft release the CRAN submission wrote,
+# once Posit's package manager lists its version, it compares CRAN's tarball with the draft's,
+# writes the tag `vX.Y.Z`, publishes the draft, and merges the release pull request after the development bump,
+# or, on the fast path, commits the bump to the default branch and closes the empty checklist pull request.
+# What it cannot write it hands over in its comment on the checklist pull request, and the run stays green.
+# A version not listed yet is a line in the summary, and the run stays green.
+# It checks out nothing and runs none of the package's code, so the write token meets no code of the package.
+# A dry run reads everything and writes nothing; it holds the same token, because only such a token sees draft releases.
+
+name: Release status
+
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: "Check and report everything, but tag, publish, commit, merge, close and comment nothing"
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      published:
+        description: "One `<package> <version>` per line for each release the run published"
+        value: ${{ jobs.status.outputs.published }}
+
+permissions: {}
+
+# One run per package at a time, never cancelled: two runs could otherwise both tag and merge.
+concurrency:
+  group: release-status-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  status:
+    name: Finish the releases CRAN accepted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      published: ${{ steps.status.outputs.published }}
+    steps:
+      - name: Tag, publish and merge, or show what would be written
+        id: status
+        uses: krlmlr/r-release-actions/actions/release-status@main
+        with:
+          dry-run: ${{ inputs.dry-run }}
+          token: ${{ github.token }}
