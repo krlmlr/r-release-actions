@@ -310,6 +310,17 @@ for t in bash cat head tr sed cut sha256sum mktemp rm dirname basename awk; do l
 printf '%s\n' "$GOOD" >"$J"
 out=$(PATH=$SCRATCH/nojq run sidecar "$J" "$(sha256sum "$J" | cut -d' ' -f1)" "$T" "$SHA" fakepkg 1.0.1)
 has "without jq, it fails clearly" "$out" "::error title=jq is missing::"
+out=$(sidecar "${GOOD/pigz -11 -n/R CMD build}")
+has "a recompressed tarball compressed by R CMD build contradicts itself" "$out" \
+  "::error title=The tarball metadata contradicts itself::\`$NAME.json\` records \`\"recompressed\": true\` with the compression \"R CMD build\""
+has "naming the command" "$out" "-f cran-submission=true"
+out=$(sidecar '{"recompressed":false,"compression":"evil\nfoo=bar","name":"other"}
+'"$GOOD")
+has "two concatenated objects fail, whatever the last one says" "$out" \
+  "::error title=The tarball metadata cannot be read::\`$NAME.json\` is not exactly one JSON object."
+hasnt "and write no output" "$(cat "$SCRATCH/output")" "compression"
+out=$(sidecar "$GOOD$GOOD")
+has "as do two valid ones" "$out" "::error title=The tarball metadata cannot be read::"
 out=$(sidecar "$GOOD" 0123)
 has "a short commit is a usage error" "$out" "exit 2"
 

@@ -56,13 +56,13 @@ outputs:
   artifact-id:
     description: "The artifact's ID"
     value: ${{ steps.find.outputs.artifact-id || inputs.artifact-id }}
-  # Empty when the sidecar step failed, so that a later report does not show a refused tarball as taken.
+  # Empty unless the sidecar step passed or was skipped, so that a later report does not show a refused tarball as taken.
   tarball:
     description: "The path of the verified tarball"
-    value: ${{ steps.sidecar.outcome != 'failure' && steps.verify.outputs.tarball || '' }}
+    value: ${{ (steps.sidecar.outcome == 'success' || steps.sidecar.outcome == 'skipped') && steps.verify.outputs.tarball || '' }}
   sha256:
     description: "The tarball's SHA-256"
-    value: ${{ steps.sidecar.outcome != 'failure' && steps.verify.outputs.sha256 || '' }}
+    value: ${{ (steps.sidecar.outcome == 'success' || steps.sidecar.outcome == 'skipped') && steps.verify.outputs.sha256 || '' }}
   compression:
     description: "With `require-recompressed`, the compression the sidecar records, `pigz -11 -n`"
     value: ${{ steps.sidecar.outputs.compression }}

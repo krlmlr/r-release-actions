@@ -75,7 +75,8 @@ What a run does, job by job:
   It downloads the file and verifies it:
   its SHA-256 is the artifact's digest, its name is `<package>_<version>.tar.gz`, and it holds that package and version.
   It downloads the run's sidecar `<package>_<version>.tar.gz.json` too, and fails with its own error
-  when the run holds none, when it does not record `"recompressed": true` with a known `compression`, when it names another file,
+  when the run holds none, when it is not exactly one JSON object,
+  when it does not record `"recompressed": true` with the `compression` `pigz -11 -n`, when it names another file,
   when its `commit` is not `sha`, or when its `sha256` is not the downloaded file's; each value is compared exactly.
   Each of these errors names the command that dispatches a suitable check run, such as
   `gh workflow run R-CMD-check.yaml --ref <branch> -f cran-submission=true`.

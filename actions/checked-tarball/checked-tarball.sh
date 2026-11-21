@@ -27,7 +27,7 @@
 #     Writes `tarball` and `sha256` to GITHUB_OUTPUT.
 #   sidecar <json> <json sha256> <tarball> <sha> <package> <version>
 #     The sidecar the check run wrote beside the tarball, a JSON object, has the SHA-256 of its artifact's digest,
-#     says `"recompressed": true` with a known `compression` (`pigz -11 -n` or `R CMD build`),
+#     is exactly one JSON object, says `"recompressed": true` with the `compression` `pigz -11 -n`,
 #     names `<package>_<version>.tar.gz`, records <sha> as its `commit`,
 #     and records the SHA-256 of <tarball>, the downloaded file; each value is compared exactly.
 #     Every failure names the command that dispatches a suitable check run. Needs `jq`.
@@ -296,8 +296,9 @@ cmd_sidecar() {
       "The downloaded \`$name.json\` has the SHA-256 \`$actual\`, and its artifact's digest is \`$expected\`. Nothing was drafted or uploaded." -- \
       "Dispatch the submission again." \
       "$(dispatch_advice)"
-  jq -e 'type == "object"' "$json" >/dev/null 2>"$work/err" ||
-    fail "Metadata" "The tarball metadata cannot be read" "\`$name.json\` is no JSON object. Nothing was drafted or uploaded." "$work/err" -- \
+  # Exactly one value: `jq -e` takes its status from the last of several, so each check below must see only one.
+  jq -e -s 'length == 1 and (.[0] | type == "object")' "$json" >/dev/null 2>"$work/err" ||
+    fail "Metadata" "The tarball metadata cannot be read" "\`$name.json\` is not exactly one JSON object. Nothing was drafted or uploaded." "$work/err" -- \
       "Check the artifact the check workflow uploaded." \
       "$(dispatch_advice)"
   # Values are shown as JSON, so that a newline or a quote in one is visible; they are compared exactly, inside jq.
@@ -313,6 +314,11 @@ cmd_sidecar() {
   check '.compression == "pigz -11 -n" or .compression == "R CMD build"' ||
     fail "Metadata" "The tarball metadata names an unknown compression" \
       "\`$name.json\` records the compression $(field compression), neither \`\"pigz -11 -n\"\` nor \`\"R CMD build\"\`. Nothing was drafted or uploaded." -- \
+      "Check the sidecar the check workflow wrote, and update the check workflow from the package template." \
+      "$(dispatch_advice)"
+  check '.compression == "pigz -11 -n"' ||
+    fail "Metadata" "The tarball metadata contradicts itself" \
+      "\`$name.json\` records \`\"recompressed\": true\` with the compression $(field compression), not \`\"pigz -11 -n\"\`. Nothing was drafted or uploaded." -- \
       "Check the sidecar the check workflow wrote, and update the check workflow from the package template." \
       "$(dispatch_advice)"
   # shellcheck disable=SC2016  # a jq variable
@@ -335,7 +341,8 @@ cmd_sidecar() {
       "$(dispatch_advice)"
   endgroup
   summary "- Metadata: \`$name\` was recompressed with \`pigz -11 -n\` from \`${sha:0:10}\`, and has the SHA-256 the sidecar records." ""
-  output compression "$(jq -r '.compression' "$json")"
+  # The value checked above, not read again from the file.
+  output compression "pigz -11 -n"
 }
 
 case "${1:-}" in
