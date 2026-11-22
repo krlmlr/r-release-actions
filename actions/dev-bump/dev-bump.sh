@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Write the development bump that follows a CRAN release into a package's checkout.
 #
-# In <package dir>, for the release `<package> X.Y.Z` that DESCRIPTION carries:
-#   - DESCRIPTION: `Version: X.Y.Z` becomes `Version: X.Y.Z.9000`; nothing else changes.
+# In <package dir>, for the release `<package> X.Y.Z` or `<package> X.Y.Z.W` (W below 9000) that DESCRIPTION carries:
+#   - DESCRIPTION: `Version: X.Y.Z` becomes `Version: X.Y.Z.9000`, and `X.Y.Z.W` becomes `X.Y.Z.W.9000`;
+#     nothing else changes.
 #   - NEWS.md: a development section at the top, the heading `# <package> (development version)`
 #     and one line, the compare link from the release's tag to the default branch:
 #
@@ -12,9 +13,10 @@
 #
 #     It replaces a development section already at the top, and goes above the first heading otherwise;
 #     lines before the first heading, such as a marker, stay where they are.
-#     NEWS.md must hold the release's section, headed `# <package> X.Y.Z` with or without ` (YYYY-MM-DD)`.
+#     The tag is `vX.Y.Z.W` after a four-component release.
+#     NEWS.md must hold the release's section, headed `# <package> X.Y.Z` (or `X.Y.Z.W`) with or without ` (YYYY-MM-DD)`.
 #     Headings inside code fences are not headings.
-# A checkout that already carries `X.Y.Z.9000` is left alone, so running it twice changes nothing.
+# A checkout that already carries `X.Y.Z.9000` or `X.Y.Z.W.9000` is left alone, so running it twice changes nothing.
 # It writes no commit: the release status workflow commits the two files, and a maintainer commits them by hand.
 #
 # Usage:
@@ -57,13 +59,15 @@ out() {
   printf 'version=%s\nchanged=%s\n' "$1" "$2" >>"$GITHUB_OUTPUT"
 }
 
-if [[ $version =~ ^[0-9]+[.-][0-9]+[.-][0-9]+\.9000$ ]]; then
+# A release version has three components, or four whose last is below 9000, as in cran-lib.sh's release_version.
+release='[0-9]+[.-][0-9]+[.-][0-9]+([.-]0*([0-9]{1,3}|[0-8][0-9]{3}))?'
+if [[ $version =~ ^$release\.9000$ ]]; then
   echo "$pkg $version is already the development version: nothing to do."
   out "$version" false
   exit 0
 fi
-[[ $version =~ ^[0-9]+[.-][0-9]+[.-][0-9]+$ ]] ||
-  die "DESCRIPTION gives $pkg $version, which is no three-component release version"
+[[ $version =~ ^$release$ ]] ||
+  die "DESCRIPTION gives $pkg $version, which is no release version: three components, or four with the last below 9000"
 dev=$version.9000
 tag=v$version
 

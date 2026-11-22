@@ -3,7 +3,8 @@
 # Read the release a package's checkout describes, and stop on anything that is no release ready to submit.
 #
 # From DESCRIPTION and NEWS.md in <package dir>:
-#   - `Package:` and `Version:`; a version with more than three components is a development version, and fails.
+#   - `Package:` and `Version:`; anything but a release version, three components or four with the last below 9000,
+#     fails, such as the development versions 1.2.3.9000 and 1.4.2.1.9000.
 #   - the dates: NEWS.md has exactly one section headed `# <package> <version> (YYYY-MM-DD)`,
 #     DESCRIPTION's `Date:` is that same date, and the date is within one day of today (UTC),
 #     which allows for the maintainer's time zone.
@@ -55,12 +56,10 @@ valid_package "$pkg" ||
 valid_version "$version" ||
   fail "Version" "No valid version" "\`DESCRIPTION\` gives the version \`$version\`." -- \
     "Set \`Version:\` in \`DESCRIPTION\` to a release version such as \`1.2.3\`."
-components=$(printf '%s\n' "$version" | awk -F '[.-]' '{ print NF }')
-if [ "$components" -gt 3 ]; then
-  fail "Version" "Development version" \
-    "\`DESCRIPTION\` carries \`$version\`, which has $components components: a development version, which CRAN does not take. Nothing was drafted or uploaded." -- \
+release_version "$version" ||
+  fail "Version" "No release version" \
+    "\`DESCRIPTION\` carries \`$version\`, and a release version has three components, or four with the last below 9000, such as \`1.4.2.1\`; a development version such as \`1.2.3.9000\` is none. Nothing was drafted or uploaded." -- \
     "Submit the commit that sets the release version, the release branch's head or, on the fast path, \`main\`'s."
-fi
 endgroup
 summary "Package **$pkg** version **$version**." ""
 

@@ -59,7 +59,8 @@ Inputs:
 What a run does, job by job:
 
 - **version** reads `Package:` and `Version:` from `DESCRIPTION`.
-  It stops on a development version, one with more than three components.
+  It stops on anything but a release version, which has three components, or four with the last below 9000, such as `1.4.2.1`:
+  a development version such as `1.2.3.9000` or `1.4.2.1.9000` stops it.
   It verifies the dates without changing them: exactly one `NEWS.md` section for the version,
   whose heading carries a date, the same as the `Date:` field that `DESCRIPTION` must have,
   within a day of the run's date in UTC.
@@ -266,8 +267,9 @@ Inputs:
 What a run does, job by job:
 
 - **hard** runs every check that CRAN requires, and fails when any fails, with an error for each that names its cause:
-  - `Version:` has exactly three components, such as `1.2.3` or `1.2-3`.
-    A version with two components, such as `1.0`, fails on purpose: this process releases three-component versions only.
+  - `Version:` is a release version: three components, such as `1.2.3` or `1.2-3`,
+    or four with the last below 9000, such as `1.4.2.1`, a patch of a package whose first three components follow an upstream library.
+    A version with two components, such as `1.0`, fails on purpose, as does a development version such as `1.2.3.9000` or `1.4.2.1.9000`.
   - `DESCRIPTION` has no `Remotes` field.
   - CRAN's package database, [`packages.rds`](https://cran.r-project.org/web/packages/packages.rds), can be read.
     The next checks use it, and a database that cannot be read fails, because what they check is then unknown.
@@ -431,7 +433,7 @@ The calling job grants `contents: write` to tag, publish and commit, and `pull-r
 
 [`actions/dev-bump/dev-bump.sh`](actions/dev-bump/dev-bump.sh) writes the development bump into a checkout,
 and the release status workflow runs it on the files it commits.
-It sets `Version: X.Y.Z.9000` in `DESCRIPTION`, and puts the development section at the top of `NEWS.md`,
+It sets `Version: X.Y.Z.9000` in `DESCRIPTION`, or `X.Y.Z.W.9000` after a four-component release, and puts the development section at the top of `NEWS.md`,
 replacing one that is there:
 
 ```markdown
