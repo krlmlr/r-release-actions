@@ -55,6 +55,14 @@ succeeds "data.table is one" valid_package data.table
 fails "a quote is not" valid_package 'x"; rm'
 succeeds "1.2.3 is a version" valid_version 1.2.3
 fails "a quote is not" valid_version '1.2.3"'
+succeeds "1.2.3 is a release version" release_version 1.2.3
+succeeds "so is 1.2-3" release_version 1.2-3
+succeeds "and 1.4.2.1, a patch of 1.4.2" release_version 1.4.2.1
+succeeds "and 1.4.2-8999" release_version 1.4.2-8999
+fails "1.0 is not" release_version 1.0
+fails "nor 1.2.3.9000" release_version 1.2.3.9000
+fails "nor 1.4.2.1.9000" release_version 1.4.2.1.9000
+fails "nor 1.4.2.1.2" release_version 1.4.2.1.2
 succeeds "a full SHA is one" valid_sha 0123456789abcdef0123456789abcdef01234567
 fails "a short one is not" valid_sha 0123456789
 

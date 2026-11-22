@@ -18,7 +18,8 @@
 #      the default branch or the open pull requests that cannot be read fail before any write.
 #   9. A published release whose checklist pull request is open is finished by the next run, after a kill
 #      between publishing and commenting or after a partial finish, and one whose pull request is closed is left alone.
-#  10. `compare` ignores the MD5 file and the fields CRAN adds to DESCRIPTION, and counts executable bits.
+#  10. A four-component release such as 1.4.2.1 is tagged `v1.4.2.1` and bumped to 1.4.2.1.9000.
+#  11. `compare` ignores the MD5 file and the fields CRAN adds to DESCRIPTION, and counts executable bits.
 #
 # Usage:
 #   actions/release-status/release-status-test.sh
@@ -439,6 +440,50 @@ has "trailing zeros and \`-\` make no difference, so the draft is the latest" "$
 p3m_lists 1.0
 out=$(run --dry-run)
 has "an earlier version with fewer components is not later" "$(cat "$SUMMARY")" "fakepkg 1.0.1 is not on P3M yet"
+p3m_lists 1.0.1
+
+section "a four-component release"
+V=1.4.2.1
+rm -rf "$SCRATCH/pkg4" "$SCRATCH/cranpkg4"
+cp -r "$SCRATCH/pkg" "$SCRATCH/pkg4"
+sed -i "s/^Version: .*/Version: $V/" "$SCRATCH/pkg4/fakepkg/DESCRIPTION"
+DRAFT4=$SCRATCH/dl/fakepkg_$V.tar.gz
+tar -czf "$DRAFT4" -C "$SCRATCH/pkg4" fakepkg
+cp -r "$SCRATCH/pkg4" "$SCRATCH/cranpkg4"
+printf 'Repository: CRAN\nDate/Publication: 2026-11-05 12:00:00 UTC\n' >>"$SCRATCH/cranpkg4/fakepkg/DESCRIPTION"
+tar -czf "$SRV/cran/src/contrib/fakepkg_$V.tar.gz" -C "$SCRATCH/cranpkg4" fakepkg
+p3m_lists $V
+NEWS4=$'# fakepkg 1.4.2.1 (2026-11-02)\n\n- Patch.\n\n'"$NEWS_REL"
+answer "$R/releases?per_page=100" "[$(draft 7 v$V fakepkg_$V.tar.gz "sha256:$(sha256sum "$DRAFT4" | cut -d' ' -f1)")]"
+answer_raw "$R/releases/assets/70" "$DRAFT4"
+answer "$R/pulls?state=open&per_page=100" "[{\"number\": 12, \"author_association\": \"OWNER\", \"user\": {\"login\": \"maint\", \"type\": \"User\"}, \"head\": {\"repo\": {\"full_name\": \"owner/fakepkg\"}}, \"body\": \"<!-- release-checklist: fakepkg $V -->\"}]"
+answer "$R/git/matching-refs/tags/v$V" '[]'
+answer "$R/pulls/12" "{\"changed_files\": 3, \"head\": {\"ref\": \"release-$V\", \"repo\": {\"full_name\": \"owner/fakepkg\"}}, \"base\": {\"ref\": \"main\"}}"
+answer "$R/compare/$SHA...release-$V" '{"status": "ahead"}'
+answer "$R/git/ref/heads/release-$V" "{\"object\": {\"sha\": \"$HEAD\"}}"
+for c in "$SHA" "$HEAD" "$MAIN"; do
+  answer "$R/contents/DESCRIPTION?ref=$c" "{\"content\": \"$(b64 "Package: fakepkg"$'\n'"Version: $V"$'\n'"Date: 2026-11-02"$'\n')\"}"
+  answer "$R/contents/NEWS.md?ref=$c" "{\"content\": \"$(b64 "$NEWS4")\"}"
+done
+out=$(run)
+has "it succeeds" "$out" "exit 0"
+w=$(cat "$SCRATCH/writes")
+has "the tag carries all four components" "$w" "POST $R/git/tags
+  tag=v1.4.2.1
+  message=fakepkg 1.4.2.1
+
+- Patch.
+  object=$SHA"
+has "the release is published as the latest" "$w" "PATCH $R/releases/7
+  draft=false
+  make_latest=true"
+has "the bump appends a fifth component" "$w" "Version: 1.4.2.1.9000"
+has "with the compare link from the four-component tag" "$w" "Changes since v1.4.2.1: <https://github.com/owner/fakepkg/compare/v1.4.2.1...main>"
+has "the bump's commit says so" "$w" "message=Bump version to 1.4.2.1.9000"
+has "the release branch moves" "$(order)" "PATCH $R/git/refs/heads/release-1.4.2.1|PUT $R/pulls/12/merge"
+has "it writes the published release" "$(cat "$SCRATCH/output")" $'published<<EOF_PUBLISHED\nfakepkg 1.4.2.1\nEOF_PUBLISHED'
+answer "$R/releases?per_page=100" "[$(draft 7 v1.0.1 fakepkg_1.0.1.tar.gz "sha256:$DSHA")]"
+answer_raw "$R/releases/assets/70" "$DRAFT"
 p3m_lists 1.0.1
 
 section "compare"

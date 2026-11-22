@@ -147,5 +147,8 @@ sha256_of() {
 # A package name and a release version as CRAN accepts them, checked before either reaches a URL, a jq program or a marker.
 valid_package() { [[ $1 =~ ^[A-Za-z][A-Za-z0-9.]*[A-Za-z0-9]$ ]]; }
 valid_version() { [[ $1 =~ ^[0-9]+[.-][0-9]+([.-][0-9]+)*$ ]]; }
+# A release version has three components, or four whose last is below 9000, such as 1.4.2.1 for a patch of 1.4.2;
+# 1.2.3.9000 and 1.4.2.1.9000 are development versions.
+release_version() { [[ $1 =~ ^[0-9]+[.-][0-9]+[.-][0-9]+([.-]0*([0-9]{1,3}|[0-8][0-9]{3}))?$ ]]; }
 valid_sha() { [[ $1 =~ ^[0-9a-f]{40}$ ]]; }
 valid_repo() { [[ $1 =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; }

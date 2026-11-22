@@ -14,7 +14,8 @@
 #     lines before the first heading, such as a marker, stay where they are.
 #     NEWS.md must hold the release's section, headed `# <package> X.Y.Z` with or without ` (YYYY-MM-DD)`.
 #     Headings inside code fences are not headings.
-# A checkout that already carries `X.Y.Z.9000` is left alone, so running it twice changes nothing.
+# A release `X.Y.Z.W`, four components with the last below 9000, becomes `X.Y.Z.W.9000` the same way.
+# A checkout that already carries `X.Y.Z.9000` or `X.Y.Z.W.9000` is left alone, so running it twice changes nothing.
 # It writes no commit: the release status workflow commits the two files, and a maintainer commits them by hand.
 #
 # Usage:
@@ -57,13 +58,15 @@ out() {
   printf 'version=%s\nchanged=%s\n' "$1" "$2" >>"$GITHUB_OUTPUT"
 }
 
-if [[ $version =~ ^[0-9]+[.-][0-9]+[.-][0-9]+\.9000$ ]]; then
+# A release version has three components, or four whose last is below 9000, as in cran-lib.sh's release_version.
+release='[0-9]+[.-][0-9]+[.-][0-9]+([.-]0*([0-9]{1,3}|[0-8][0-9]{3}))?'
+if [[ $version =~ ^$release\.9000$ ]]; then
   echo "$pkg $version is already the development version: nothing to do."
   out "$version" false
   exit 0
 fi
-[[ $version =~ ^[0-9]+[.-][0-9]+[.-][0-9]+$ ]] ||
-  die "DESCRIPTION gives $pkg $version, which is no three-component release version"
+[[ $version =~ ^$release$ ]] ||
+  die "DESCRIPTION gives $pkg $version, which is no release version: three components, or four with the last below 9000"
 dev=$version.9000
 tag=v$version
 

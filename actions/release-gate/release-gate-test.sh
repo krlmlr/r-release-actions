@@ -4,7 +4,7 @@
 # and stubs of urlchecker, spelling, the README's knit and `R CMD check`: nothing reaches CRAN.
 #
 #   1. `hard` passes a release that meets every requirement, and reports each check.
-#   2. `hard` fails, each with its own error, on a development version, `Remotes`, a dependency on a source outside CRAN
+#   2. `hard` passes a four-component release such as 1.4.2.1, and fails, each with its own error, on a development version, `Remotes`, a dependency on a source outside CRAN
 #      or on a version CRAN does not have (four components CRAN has pass; base packages pass; Bioconductor's packages,
 #      read from local indexes, and Additional_repositories are reported, and unreadable indexes too),
 #      a missing, doubled, undated, mismatched, stale or future NEWS.md section,
@@ -128,7 +128,7 @@ o=$(cat "$SCRATCH/output")
 has "with the package" "$o" "package=fakepkg"
 has "and the version" "$o" "version=1.0.1"
 has "and the verdict" "$o" "passed=true"
-has "the report says the version passed" "$o" "- ✅ **Version:** \`1.0.1\` has three components."
+has "the report says the version passed" "$o" "- ✅ **Version:** \`1.0.1\` is a release version."
 has "and Remotes" "$o" "- ✅ **Remotes:**"
 has "and the dependencies" "$o" "- ✅ **Dependencies:**"
 has "and NEWS.md, found with its date" "$o" \
@@ -155,6 +155,16 @@ has "and the verdict" "$(cat "$SCRATCH/output")" "passed=false"
 has "the other checks still run" "$(cat "$SCRATCH/output")" "- ✅ **Remotes:**"
 checkout 1.0 2026-11-15 "# fakepkg 1.0 (2026-11-15)"
 has "two components fail" "$(hard)" "::error title=No release version::"
+checkout 1.4.2.1.9000 2026-11-15 "# fakepkg 1.4.2.1.9000 (2026-11-15)"
+has "the development version of a four-component release fails" "$(hard)" "::error title=No release version::"
+checkout 1.4.2.1.2 2026-11-15 "# fakepkg 1.4.2.1.2 (2026-11-15)"
+has "five components fail" "$(hard)" "::error title=No release version::"
+checkout 1.4.2.1 2026-11-15 "# fakepkg 1.4.2.1 (2026-11-15)"
+out=$(hard)
+has "four components with the last below 9000 pass" "$out" "exit 0"
+has "as a release version" "$(cat "$SCRATCH/output")" "- ✅ **Version:** \`1.4.2.1\` is a release version."
+checkout 1.4.2-1 2026-11-15 "# fakepkg 1.4.2-1 (2026-11-15)"
+has "with a dash, too" "$(hard)" "exit 0"
 
 section "hard: Remotes and dependencies"
 EXTRA=$'Remotes:\n    r-lib/rlang' checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1 (2026-11-15)"

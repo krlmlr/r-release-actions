@@ -4,7 +4,7 @@
 #
 #   hard <package dir> <out dir>
 #     Every check runs, and the step fails when any of them fails, each with its own error:
-#     - the version has exactly three components;
+#     - the version is a release version: three components, or four with the last below 9000;
 #     - DESCRIPTION has no `Remotes` field;
 #     - CRAN's package database can be read; the next checks use it;
 #     - no dependency in Depends, Imports, LinkingTo, Suggests or Enhances names a source as `Remotes` does
@@ -207,13 +207,11 @@ cmd_hard() {
   group "Version"
   val "package" "$pkg"
   val "version" "$version"
-  local components
-  components=$(printf '%s\n' "$version" | awk -F '[.-]' '{ print NF }')
-  if valid_version "$version" && [ "$components" -eq 3 ]; then
-    pass "Version" "\`$version\` has three components."
+  if release_version "$version"; then
+    pass "Version" "\`$version\` is a release version."
   else
     flunk "Version" "No release version" \
-      "\`DESCRIPTION\` carries \`$version\`, and a release version has exactly three components, such as \`1.2.3\`." -- \
+      "\`DESCRIPTION\` carries \`$version\`, and a release version has three components, such as \`1.2.3\`, or four with the last below 9000, such as \`1.2.3.1\`." -- \
       "Set \`Version:\` in \`DESCRIPTION\` to the release version: on the release branch, or on the fast path in \`main\`."
   fi
   endgroup

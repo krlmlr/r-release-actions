@@ -1,6 +1,6 @@
 name: "Release gate"
 description: >
-  Enforces what CRAN requires of a release (mode `hard`): a three-component version, no `Remotes`,
+  Enforces what CRAN requires of a release (mode `hard`): a release version (three components, or four with the last below 9000), no `Remotes`,
   no dependency on a version or source that CRAN or Bioconductor does not have,
   and a NEWS.md section dated as DESCRIPTION and at most 31 days old.
   Reports on what CRAN expects, and never fails on it (mode `report`): a deadline in CRAN's package database,

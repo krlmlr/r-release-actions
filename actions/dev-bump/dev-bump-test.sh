@@ -2,7 +2,7 @@
 # shellcheck source-path=SCRIPTDIR
 # Check dev-bump.sh offline, on scratch checkouts.
 #
-#   1. A release version becomes `X.Y.Z.9000`, and only the `Version:` line of DESCRIPTION changes.
+#   1. A release version becomes `X.Y.Z.9000`, or `X.Y.Z.W.9000` for four components, and only the `Version:` line of DESCRIPTION changes.
 #   2. NEWS.md gains the development section with the compare link above the release's section,
 #      keeping a preamble, or replaces a development section already at the top, ignoring headings in code fences.
 #   3. A second run changes nothing.
@@ -62,7 +62,24 @@ is "the section is replaced up to the next heading outside a fence" "$(cat "$P/N
     '# fakepkg 1.3-1' '' '- Fix.' '' '# fakepkg 1.3-0' '' '- Old.')"
 has "the version keeps its separator" "$(cat "$P/DESCRIPTION")" "Version: 1.3-1.9000"
 
+section "a four-component release"
+fixture 1.4.2.1 $'# fakepkg 1.4.2.1\n\n- Patch.\n'
+out=$(run)
+has "it succeeds" "$out" "exit 0"
+has "the bump appends a fifth component" "$(cat "$P/DESCRIPTION")" "Version: 1.4.2.1.9000"
+has "the compare link starts at the four-component tag" "$(cat "$P/NEWS.md")" \
+  "Changes since v1.4.2.1: <https://github.com/owner/fakepkg/compare/v1.4.2.1...main>"
+out=$(run)
+has "a second run says there is nothing to do" "$out" "already the development version"
+has "and changes nothing" "$(cat "$SCRATCH/output")" "changed=false"
+
 section "refusals"
+fixture 1.4.2.1.2 $'# fakepkg 1.4.2.1.2\n'
+out=$(run)
+has "five components are no release" "$out" "exit 1"
+fixture 1.4.2.9000.9000 $'# fakepkg 1.4.2.9000\n'
+out=$(run)
+has "nor is a bumped development version" "$out" "exit 1"
 fixture 1.3.0.9001 $'# fakepkg 1.3.0\n'
 out=$(run)
 has "a checkpoint version is no release" "$out" "exit 1"

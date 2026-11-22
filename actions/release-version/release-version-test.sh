@@ -3,7 +3,7 @@
 # Check release-version.sh offline, against package checkouts written here.
 #
 #   1. A release version dated today in both places passes, with its outputs and notes ending in the marker.
-#   2. A development version fails before the dates are read.
+#   2. A development version fails before the dates are read; four components with the last below 9000 are a release.
 #   3. A heading without a date, dates that differ, and a missing or doubled section fail.
 #   4. A date more than a day from today fails a real run and warns on a dry run; a day off passes.
 #
@@ -72,6 +72,20 @@ out=$(run)
 has "it fails" "$out" "exit 1"
 has "naming the development version" "$out" "::error title=Development version::"
 hasnt "before the dates" "$out" "Dates: NEWS.md"
+checkout 1.4.2.1.9000 2026-11-15 "# fakepkg 1.4.2.1.9000 (2026-11-15)"
+out=$(run)
+has "so does the development version of a four-component release" "$out" "::error title=Development version::"
+checkout 1.4.2.1.2 2026-11-15 "# fakepkg 1.4.2.1.2 (2026-11-15)"
+has "and five components" "$(run)" "::error title=Development version::"
+
+section "a four-component release version"
+checkout 1.4.2.1 2026-11-15 "# fakepkg 1.4.2.1 (2026-11-15)"
+out=$(run)
+has "it succeeds" "$out" "exit 0"
+has "with its version" "$(cat "$SCRATCH/output")" "version=1.4.2.1"
+has "and its marker" "$(cat "$SCRATCH/out/notes.md")" "<!-- cran-submission: fakepkg 1.4.2.1 -->"
+checkout 1.4.2-8999 2026-11-15 "# fakepkg 1.4.2-8999 (2026-11-15)"
+has "a dash separates the fourth component too" "$(run)" "exit 0"
 
 section "the dates are verified, never set"
 checkout 1.0.1 2026-11-15 "# fakepkg 1.0.1"
