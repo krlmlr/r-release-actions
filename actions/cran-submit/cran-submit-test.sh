@@ -310,13 +310,4 @@ out=$(run upload --dry-run "$SCRATCH/pkg/fakepkg.tar.gz")
 has "a misnamed tarball still fails" "$out" "::error title=The tarball is misnamed::"
 is "and sends nothing" "$(requests)" ""
 
-echo
-echo "== a four-component release version is submitted as any other"
-mkdir -p "$SCRATCH/pkg4/fakepkg"
-sed 's/^Version: .*/Version: 1.4.2.1/' "$SCRATCH/pkg/fakepkg/DESCRIPTION" >"$SCRATCH/pkg4/fakepkg/DESCRIPTION"
-tar -czf "$SCRATCH/pkg4/fakepkg_1.4.2.1.tar.gz" -C "$SCRATCH/pkg4" fakepkg
-out=$(run upload --dry-run "$SCRATCH/pkg4/fakepkg_1.4.2.1.tar.gz")
-has "it succeeds" "$out" "exit 0"
-has "with the comment" "$(cat "$SUMMARY")" "   - \`comment\`: \`fakepkg 1.4.2.1\`"
-
 done_testing

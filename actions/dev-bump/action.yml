@@ -1,7 +1,8 @@
 name: "Development bump"
 description: >
   Writes the development bump that follows a CRAN release into the package's checkout:
-  `Version: X.Y.Z.9000` (or `X.Y.Z.W.9000`) in DESCRIPTION, and a development section with the compare link from `vX.Y.Z` at the top of NEWS.md,
+  `Version: X.Y.Z.9000` in DESCRIPTION (`X.Y.Z.W.9000` after a four-component release `X.Y.Z.W`),
+  and a development section with the compare link from `vX.Y.Z` (or `vX.Y.Z.W`) at the top of NEWS.md,
   with dev-bump.sh beside this file. It commits nothing.
   The release status workflow runs the same script on the files it commits.
 

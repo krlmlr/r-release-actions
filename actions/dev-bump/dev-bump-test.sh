@@ -74,12 +74,34 @@ has "a second run says there is nothing to do" "$out" "already the development v
 has "and changes nothing" "$(cat "$SCRATCH/output")" "changed=false"
 
 section "refusals"
-fixture 1.4.2.1.2 $'# fakepkg 1.4.2.1.2\n'
+refused() { # <version> <description>
+  fixture "$1" "# fakepkg $1"$'\n'
+  local out
+  out=$(run)
+  has "$2" "$out" "DESCRIPTION gives fakepkg $1, which is no release version"
+  has "and fails" "$out" "exit 1"
+  is "and changes nothing" "$(grep Version "$P/DESCRIPTION")" "Version: $1"
+}
+refused 1.4.2.1.2 "five components are no release"
+refused 1.4.2.9000.9000 "nor is a bumped development version"
+refused 1.4.2.9001 "nor four components with the last 9000 or more"
+refused 1.0 "nor two components"
+
+section "the boundary of the fourth component"
+fixture 1.4.2.8999 $'# fakepkg 1.4.2.8999\n'
 out=$(run)
-has "five components are no release" "$out" "exit 1"
-fixture 1.4.2.9000.9000 $'# fakepkg 1.4.2.9000\n'
+has "8999 is a release" "$out" "exit 0"
+has "and is bumped" "$(cat "$P/DESCRIPTION")" "Version: 1.4.2.8999.9000"
+fixture 1.4.2.9000 $'# fakepkg 1.4.2\n'
 out=$(run)
-has "nor is a bumped development version" "$out" "exit 1"
+has "9000 is the development version of 1.4.2" "$out" "already the development version"
+fixture 1.4.2-1 $'# fakepkg 1.4.2-1\n'
+out=$(run)
+has "a dash before the fourth component works too" "$out" "exit 0"
+has "keeping its separator" "$(cat "$P/DESCRIPTION")" "Version: 1.4.2-1.9000"
+has "and the tag" "$(cat "$P/NEWS.md")" "Changes since v1.4.2-1:"
+
+section "more refusals"
 fixture 1.3.0.9001 $'# fakepkg 1.3.0\n'
 out=$(run)
 has "a checkpoint version is no release" "$out" "exit 1"

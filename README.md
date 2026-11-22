@@ -59,8 +59,8 @@ Inputs:
 What a run does, job by job:
 
 - **version** reads `Package:` and `Version:` from `DESCRIPTION`.
-  It stops on a development version, one with more than three components,
-  unless it has four and the last is below 9000, such as `1.4.2.1`.
+  It stops on anything but a release version, which has three components, or four with the last below 9000, such as `1.4.2.1`:
+  a development version such as `1.2.3.9000` or `1.4.2.1.9000` stops it.
   It verifies the dates without changing them: exactly one `NEWS.md` section for the version,
   whose heading carries a date, the same as the `Date:` field that `DESCRIPTION` must have,
   within a day of the run's date in UTC.

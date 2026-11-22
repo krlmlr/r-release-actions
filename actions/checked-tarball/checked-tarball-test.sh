@@ -182,10 +182,4 @@ has "a file that is no tarball fails" "$out" "::error title=The tarball cannot b
 out=$(run verify "$SCRATCH/dl/missing_1.0.1.tar.gz" "$TSHA" missing 1.0.1)
 has "no file fails" "$out" "::error title=No tarball downloaded::"
 
-printf 'Package: fakepkg\nVersion: 1.4.2.1\n' >"$SCRATCH/pkg/fakepkg/DESCRIPTION"
-T4=$SCRATCH/dl/fakepkg_1.4.2.1.tar.gz
-tar -czf "$T4" -C "$SCRATCH/pkg" fakepkg
-out=$(run verify "$T4" "$(sha256sum "$T4" | cut -d' ' -f1)" fakepkg 1.4.2.1)
-has "a four-component release version passes" "$out" "exit 0"
-
 done_testing

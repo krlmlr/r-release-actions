@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Write the development bump that follows a CRAN release into a package's checkout.
 #
-# In <package dir>, for the release `<package> X.Y.Z` that DESCRIPTION carries:
-#   - DESCRIPTION: `Version: X.Y.Z` becomes `Version: X.Y.Z.9000`; nothing else changes.
+# In <package dir>, for the release `<package> X.Y.Z` or `<package> X.Y.Z.W` (W below 9000) that DESCRIPTION carries:
+#   - DESCRIPTION: `Version: X.Y.Z` becomes `Version: X.Y.Z.9000`, and `X.Y.Z.W` becomes `X.Y.Z.W.9000`;
+#     nothing else changes.
 #   - NEWS.md: a development section at the top, the heading `# <package> (development version)`
 #     and one line, the compare link from the release's tag to the default branch:
 #
@@ -12,9 +13,9 @@
 #
 #     It replaces a development section already at the top, and goes above the first heading otherwise;
 #     lines before the first heading, such as a marker, stay where they are.
-#     NEWS.md must hold the release's section, headed `# <package> X.Y.Z` with or without ` (YYYY-MM-DD)`.
+#     The tag is `vX.Y.Z.W` after a four-component release.
+#     NEWS.md must hold the release's section, headed `# <package> X.Y.Z` (or `X.Y.Z.W`) with or without ` (YYYY-MM-DD)`.
 #     Headings inside code fences are not headings.
-# A release `X.Y.Z.W`, four components with the last below 9000, becomes `X.Y.Z.W.9000` the same way.
 # A checkout that already carries `X.Y.Z.9000` or `X.Y.Z.W.9000` is left alone, so running it twice changes nothing.
 # It writes no commit: the release status workflow commits the two files, and a maintainer commits them by hand.
 #
