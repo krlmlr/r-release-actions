@@ -4,7 +4,8 @@
 # Check cran-submit.sh offline, against a fake CRAN submission form on 127.0.0.1: nothing reaches CRAN.
 #
 #   1. `upload` sends the two POSTs of `devtools:::upload_cran()`, field for field and in order,
-#      with the tarball's own bytes, the maintainer from DESCRIPTION and the comment `<package> <version>`,
+#      with the tarball's own bytes, the maintainer from DESCRIPTION and the comment `Commit: <sha>`
+#      (`<package> <version>` without SUBMIT_SHA),
 #      and reports the next step: the confirmation email.
 #   2. A 404 reads CRAN's maintenance message from the index page and fails with it.
 #   3. An upload without `pkg_id`, a confirmation without `submit=1`, a 500 and an unreachable form
@@ -189,7 +190,7 @@ is "email, twice, from Maintainer:" "$(field email)" "jane@example.org
 jane@example.org"
 is "uploaded_file is the tarball, as application/x-gzip" "$(sed -n 's/^field uploaded_file //p' "$SCRATCH/requests")" \
   "file=fakepkg_1.0.1.tar.gz type=application/x-gzip sha256=$SHA"
-is "comment is the single line <package> <version>" "$(field comment)" "fakepkg 1.0.1"
+is "comment is the single line Commit: <sha>" "$(field comment)" "Commit: $SUBMIT_SHA"
 is "upload" "$(field upload)" "Upload package"
 is "policy_check" "$(field policy_check)" "1/"
 is "submit" "$(field submit)" "Submit package"
@@ -205,6 +206,13 @@ has "and links the commit" "$summary" "### Upload to CRAN
 has "the log names the commit" "$out" "$(printf '  %-20s %s' commit: "$SUBMIT_SHA (release-x)")"
 has "and the next step" "$summary" "**Next step:** CRAN emailed jane@example.org; click the confirmation link in that email to finish the submission."
 hasnt "and no failure" "$summary" "How to resolve"
+
+echo
+echo "== without SUBMIT_SHA, the comment is <package> <version>"
+out=$(SUBMIT_SHA='' run upload "$TARBALL")
+has "it succeeds" "$out" "exit 0"
+is "comment is the single line <package> <version>" "$(field comment)" "fakepkg 1.0.1"
+hasnt "and the summary links no commit" "$(cat "$SUMMARY")" "$LINK"
 
 # --- 2: maintenance ------------------------------------------------------------
 
@@ -301,7 +309,7 @@ has "with every upload field" "$summary" "   - \`pkg_id\`: empty
    - \`name\`: \`Jane Müller\`
    - \`email\`: \`jane@example.org\`
    - \`uploaded_file\`: \`fakepkg_1.0.1.tar.gz\`, \`application/x-gzip\`"
-has "the comment" "$summary" "   - \`comment\`: \`fakepkg 1.0.1\`"
+has "the comment" "$summary" "   - \`comment\`: \`Commit: $SUBMIT_SHA\`"
 has "and every confirmation field" "$summary" "   - \`policy_check\`: \`1/\`
    - \`submit\`: \`Submit package\`"
 has "and how to dispatch the real run" "$summary" "dispatch the submission again on the same commit with \`dry-run\` off"

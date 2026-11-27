@@ -87,7 +87,7 @@ What a run does, job by job:
 - **preview**, on a dry run only, reports what **draft** would write, with a token that cannot write.
   Such a token may not see draft releases, so it can report creating a draft that a real run updates.
 - **upload** posts the tarball to CRAN's submission form in the form's own two steps, as `devtools:::upload_cran()` does,
-  with the single line `<package> X.Y.Z` as the comment and the maintainer from the tarball's `DESCRIPTION`.
+  with the single line `Commit: <sha>`, the submitted commit's full SHA, as the comment and the maintainer from the tarball's `DESCRIPTION`.
   CRAN then emails the maintainer, and the submission counts once the link in that email is followed.
   A form that answers 404 means CRAN is closed for maintenance, and the run shows CRAN's message.
   A dry run reports every field it would send, and sends nothing.
