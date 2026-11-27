@@ -10,7 +10,7 @@ inputs:
     description: "The tarball to upload, named `<package>_<version>.tar.gz`"
     required: true
   sha:
-    description: "The commit the tarball was built from, named in the report"
+    description: "The commit the tarball was built from, sent as the comment `Commit: <sha>` and named in the report; empty sends `<package> <version>`"
     default: ""
   dry-run:
     description: "`true` sends nothing and reports what would be sent"

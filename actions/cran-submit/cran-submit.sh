@@ -12,7 +12,8 @@
 #     the confirmation sends `pkg_id`, `name`, `email`, `policy_check` and `submit`,
 #     and succeeds when the final URL carries `submit=1`.
 #     CRAN then mails a confirmation link to the maintainer, and the submission counts once it is clicked.
-#     The comment is the single line `<package> <version>`;
+#     The comment is the single line `Commit: <sha>`, the full SHA from SUBMIT_SHA,
+#     or `<package> <version>` without SUBMIT_SHA;
 #     the maintainer's name and email come from the `Maintainer:` field
 #     that `R CMD build` writes from the `cre` person in `Authors@R`.
 #     A 404 means CRAN is closed for maintenance: the message on its index page is shown.
@@ -32,7 +33,7 @@
 # Environment:
 #   CRAN_SUBMISSION_URL  the form to post to, default https://xmpalantir.wu.ac.at/cransubmit/index2.php
 #                        (`devtools:::cran_submission_url`); cran-submit-test.sh points it at a local server
-#   SUBMIT_SHA           the commit the tarball was built from, named and linked in the report
+#   SUBMIT_SHA           the commit the tarball was built from, sent as the comment and named and linked in the report
 #   GITHUB_ACTIONS       `true` turns on the workflow commands (groups, annotations)
 #   GITHUB_STEP_SUMMARY  the file the Markdown report is appended to; unset, no report is written
 #   GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_REF_NAME
@@ -178,6 +179,7 @@ cmd_upload() {
   fi
   read_description "$tarball" "$work"
   local comment="$pkg $version" size sha
+  [ -z "$commit_sha" ] || comment="Commit: $commit_sha"
   size=$(size_of "$tarball")
   sha=$(sha256_of "$tarball")
   val "package" "$pkg"
