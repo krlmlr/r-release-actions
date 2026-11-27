@@ -5,7 +5,7 @@
 #
 #   1. `upload` sends the two POSTs of `devtools:::upload_cran()`, field for field and in order,
 #      with the tarball's own bytes, the maintainer from DESCRIPTION and the comment `Commit: <sha>`
-#      (`<package> <version>` without SUBMIT_SHA),
+#      (without a full SUBMIT_SHA, nothing is sent),
 #      and reports the next step: the confirmation email.
 #   2. A 404 reads CRAN's maintenance message from the index page and fails with it.
 #   3. An upload without `pkg_id`, a confirmation without `submit=1`, a 500 and an unreachable form
@@ -208,11 +208,15 @@ has "and the next step" "$summary" "**Next step:** CRAN emailed jane@example.org
 hasnt "and no failure" "$summary" "How to resolve"
 
 echo
-echo "== without SUBMIT_SHA, the comment is <package> <version>"
-out=$(SUBMIT_SHA='' run upload "$TARBALL")
-has "it succeeds" "$out" "exit 0"
-is "comment is the single line <package> <version>" "$(field comment)" "fakepkg 1.0.1"
-hasnt "and the summary links no commit" "$(cat "$SUMMARY")" "$LINK"
+echo "== without a full SUBMIT_SHA, nothing is sent"
+for bad in '' 0123456789 0123456789ABCDEF0123456789ABCDEF01234567; do
+  out=$(SUBMIT_SHA=$bad run upload "$TARBALL")
+  has "SUBMIT_SHA='$bad' fails" "$out" "exit 1"
+  has "with the reason" "$out" "::error title=No full commit SHA::"
+  is "and sends nothing" "$(requests)" ""
+done
+out=$(SUBMIT_SHA='' run upload --dry-run "$TARBALL")
+has "a dry run without SUBMIT_SHA fails too" "$out" "exit 1"
 
 # --- 2: maintenance ------------------------------------------------------------
 

@@ -13,7 +13,7 @@
 #     and succeeds when the final URL carries `submit=1`.
 #     CRAN then mails a confirmation link to the maintainer, and the submission counts once it is clicked.
 #     The comment is the single line `Commit: <sha>`, the full SHA from SUBMIT_SHA,
-#     or `<package> <version>` without SUBMIT_SHA;
+#     which must be set: without it, nothing is sent;
 #     the maintainer's name and email come from the `Maintainer:` field
 #     that `R CMD build` writes from the `cre` person in `Authors@R`.
 #     A 404 means CRAN is closed for maintenance: the message on its index page is shown.
@@ -33,7 +33,8 @@
 # Environment:
 #   CRAN_SUBMISSION_URL  the form to post to, default https://xmpalantir.wu.ac.at/cransubmit/index2.php
 #                        (`devtools:::cran_submission_url`); cran-submit-test.sh points it at a local server
-#   SUBMIT_SHA           the commit the tarball was built from, sent as the comment and named and linked in the report
+#   SUBMIT_SHA           required: the full 40-character SHA of the commit the tarball was built from,
+#                        sent as the comment and named and linked in the report
 #   GITHUB_ACTIONS       `true` turns on the workflow commands (groups, annotations)
 #   GITHUB_STEP_SUMMARY  the file the Markdown report is appended to; unset, no report is written
 #   GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_REF_NAME
@@ -169,17 +170,20 @@ cmd_upload() {
   base=$(basename "$tarball")
 
   # The tarball names no commit; the workflow passes the one whose check built it.
-  local commit_sha=${SUBMIT_SHA:-} commit_md=''
-  [ -z "$commit_sha" ] || commit_md="Commit $(commit_link "$commit_sha")."
+  local commit_sha=${SUBMIT_SHA:-} commit_md
 
   group "Upload: what is submitted"
+  if ! [[ $commit_sha =~ ^[0-9a-f]{40}$ ]]; then
+    fail "Upload" "No full commit SHA" "SUBMIT_SHA is '$commit_sha', not the full 40-character SHA of the commit the tarball was built from." -- \
+      "Pass the submitted commit as the action's \`sha\` input, as the reusable submission workflow does; CRAN receives it as the comment \`Commit: <sha>\`."
+  fi
+  commit_md="Commit $(commit_link "$commit_sha")."
   if ! gzip -t "$tarball" 2>"$work/gzip.err" || ! tar -tzf "$tarball" >/dev/null 2>>"$work/gzip.err"; then
     fail "Upload" "The tarball cannot be read" "\`$base\` is no gzip-compressed tar archive." "$work/gzip.err" -- \
       "Upload the tarball the check workflow built and kept as an artifact, which the submission downloads and verifies."
   fi
   read_description "$tarball" "$work"
-  local comment="$pkg $version" size sha
-  [ -z "$commit_sha" ] || comment="Commit: $commit_sha"
+  local comment="Commit: $commit_sha" size sha
   size=$(size_of "$tarball")
   sha=$(sha256_of "$tarball")
   val "package" "$pkg"
@@ -191,10 +195,10 @@ cmd_upload() {
   val "sha256" "$sha"
   val "comment" "$comment"
   val "submission URL" "$url"
-  [ -z "$commit_sha" ] || val "commit" "$commit_sha${GITHUB_REF_NAME:+ ($GITHUB_REF_NAME)}"
+  val "commit" "$commit_sha${GITHUB_REF_NAME:+ ($GITHUB_REF_NAME)}"
   endgroup
   summary "" "### Upload to CRAN${dry_run:+: dry run}" ""
-  [ -z "$commit_md" ] || summary "- $commit_md"
+  summary "- $commit_md"
   summary "- Tarball: \`$base\`, $size bytes, sha256 \`$sha\`" \
     "- Maintainer: $maint_name <$maint_email>" \
     "- Comment: \`$comment\`" \
