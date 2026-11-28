@@ -16,7 +16,7 @@ inputs:
     required: true
   flavors:
     description: >-
-      `winbuilder`: the flavors, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`;
+      `winbuilder`: `R-devel`, the only flavor it checks on;
       `macbuilder`: one flavor, `r-devel` or `r-release`
     required: true
   timeout-minutes:
@@ -28,7 +28,7 @@ inputs:
 
 outputs:
   results:
-    description: "`winbuilder`: `<flavor>=<uploaded|failed|dry-run>` for each flavor tried, separated by spaces"
+    description: "`winbuilder`: `R-devel=<uploaded|failed|dry-run>`"
     value: ${{ steps.winbuilder.outputs.results }}
   url:
     description: "`macbuilder`: the result page"
@@ -50,11 +50,10 @@ runs:
         FLAVORS: ${{ inputs.flavors }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
-        read -r -a flavors <<<"$FLAVORS"
         if [ "$DRY_RUN" = true ]; then
-          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --dry-run "$TARBALL" "${flavors[@]}"
+          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --dry-run "$TARBALL" "$FLAVORS"
         else
-          "$GITHUB_ACTION_PATH/builders.sh" winbuilder "$TARBALL" "${flavors[@]}"
+          "$GITHUB_ACTION_PATH/builders.sh" winbuilder "$TARBALL" "$FLAVORS"
         fi
       shell: bash
 

@@ -3,8 +3,8 @@
 # Check builders.sh offline, against a fake win-builder FTP server and a fake macbuilder on 127.0.0.1:
 # nothing reaches either service.
 #
-#   1. `winbuilder` uploads the tarball's own bytes by anonymous FTP to `<flavor>/<file name>` for each flavor,
-#      tries every flavor when one fails, fails loudly after them, and outputs each flavor's result.
+#   1. `winbuilder` uploads the tarball's own bytes by anonymous FTP to `R-devel/<file name>`, fails loudly when that fails,
+#      and outputs the result; any other flavor fails before sending.
 #   2. `macbuilder` posts `pkgfile` and `rflavor` with `Accept: application/json`, and outputs the result page's URL;
 #      a 502 or another refusal, an answer without a result URL or that is no JSON,
 #      and a URL on another host, with another scheme or with user info fail.
@@ -293,28 +293,30 @@ tar -czf "$TARBALL" -C "$SCRATCH/pkg" fakepkg
 SHA=$(sha256sum "$TARBALL" | cut -d' ' -f1)
 
 section "winbuilder uploads by anonymous FTP, as devtools' submit_winbuilder_ftp() does"
-out=$(run winbuilder "$TARBALL" R-devel R-release)
+out=$(run winbuilder "$TARBALL" R-devel)
 has "it succeeds" "$out" "exit 0"
-is "one STOR per flavor, into the flavor's directory, of the tarball's bytes" "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests")" \
-  "STOR /R-devel/fakepkg_1.0.1.tar.gz sha256=$SHA
-STOR /R-release/fakepkg_1.0.1.tar.gz sha256=$SHA"
-is "the results, written after each flavor" "$(cat "$SCRATCH/output")" "results=R-devel=uploaded
-results=R-devel=uploaded R-release=uploaded"
-has "the summary names the URLs" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FTP/R-devel/fakepkg_1.0.1.tar.gz"
+is "one STOR, into R-devel's directory, of the tarball's bytes" "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests")" \
+  "STOR /R-devel/fakepkg_1.0.1.tar.gz sha256=$SHA"
+is "the result" "$(cat "$SCRATCH/output")" "results=R-devel=uploaded"
+has "the summary names the URL" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FTP/R-devel/fakepkg_1.0.1.tar.gz"
 has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results to Jane Doe <jane@example.org>"
 has "with a notice" "$out" "::notice title=Uploaded to win-builder::"
 
 section "winbuilder failures"
 echo denied >"$SCRATCH/ftp-mode"
-out=$(run winbuilder "$TARBALL" R-devel R-release)
+out=$(run winbuilder "$TARBALL" R-devel)
 has "a refused upload fails" "$out" "exit 1"
 has "loudly, naming the URL" "$out" "::error title=The upload to win-builder failed::curl exited with status"
-has "for every flavor tried" "$(grep -c 'The upload to win-builder failed' <<<"$out")" 2
-is "and outputs the results" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed R-release=failed"
+is "and outputs the result" "$(cat "$SCRATCH/output")" "results=R-devel=failed"
 echo ok >"$SCRATCH/ftp-mode"
-out=$(run winbuilder "$TARBALL" R-patched)
-has "an unknown flavor fails" "$out" "::error title=No win-builder flavor::"
-is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
+for f in R-release R-oldrelease R-patched; do
+  out=$(run winbuilder "$TARBALL" "$f")
+  has "$f fails: win-builder checks on R-devel only" "$out" "::error title=No win-builder flavor::\`$f\` is not \`R-devel\`"
+  is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
+done
+out=$(run winbuilder "$TARBALL" R-devel R-release)
+has "a second flavor is a usage error" "$out" "exit 2"
+is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(WINBUILDER_URL=ftp://127.0.0.1:1 run winbuilder "$TARBALL" R-devel)
 has "an unreachable server fails" "$out" "exit 1"
 has "after two retries of the connection" "$out" "  attempt 2: curl exited with status 7, no connection"
@@ -327,9 +329,6 @@ is "without a retry, which could send part of the file again" "$(grep -c '^STOR-
 echo ok >"$SCRATCH/ftp-mode"
 out=$(run winbuilder "$TARBALL")
 has "no flavor fails, saying so" "$out" "::error title=No win-builder flavor::No flavor was given"
-out=$(run winbuilder "$TARBALL" R-devel R-release R-devel)
-is "a flavor given twice is uploaded once" "$(grep -c '^STOR ' "$SCRATCH/ftp-requests")" 2
-is "and reported once" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=uploaded R-release=uploaded"
 cp "$TARBALL" "$SCRATCH/pkg/fakepkg.tar.gz"
 out=$(run winbuilder "$SCRATCH/pkg/fakepkg.tar.gz" R-devel)
 has "a misnamed tarball fails" "$out" "::error title=The tarball is misnamed::"
@@ -342,11 +341,11 @@ out=$(run winbuilder "$SCRATCH/pkg/fakepkg_1.0.2.tar.gz" R-devel)
 has "a tarball of another release fails" "$out" "::error title=The tarball is of another release::"
 
 section "winbuilder dry run"
-out=$(run winbuilder --dry-run "$TARBALL" R-devel R-release)
+out=$(run winbuilder --dry-run "$TARBALL" R-devel)
 has "it succeeds" "$out" "exit 0"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
-has "it says what it would upload, and where" "$(cat "$SUMMARY")" "- R-release: would upload to $FTP/R-release/fakepkg_1.0.1.tar.gz"
-is "the results say so" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=dry-run R-release=dry-run"
+has "it says what it would upload, and where" "$(cat "$SUMMARY")" "- R-devel: would upload to $FTP/R-devel/fakepkg_1.0.1.tar.gz"
+is "the result says so" "$(cat "$SCRATCH/output")" "results=R-devel=dry-run"
 has "with a notice" "$out" "::notice title=Dry run::Nothing was sent to win-builder."
 
 section "macbuilder posts as devtools' check_mac() does"

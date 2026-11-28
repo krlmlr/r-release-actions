@@ -21,7 +21,7 @@
 #   builders <pr> <package> <version>
 #     The builder uploads' one comment, found by `<!-- release-builders: <package> <version> -->`
 #     among github-actions[bot]'s comments, created or updated in place:
-#     each win-builder flavor's upload from WINBUILDER_RESULTS, and macbuilder's result.
+#     win-builder's R-devel upload from WINBUILDER_RESULTS, and macbuilder's result.
 #     DRY_RUN `true` prints the comment to the log and the step summary, writes nothing, and takes an empty <pr>.
 #   attempt <pr> <package> <version> <sha> <sha256> <tarball name>
 #     A new comment for a submission attempt, which nothing edits afterwards:
@@ -141,15 +141,15 @@ cmd_builders() {
     wlines="- win-builder: no upload, job \`${wjob:-not run}\`"$'\n'
     [ "$wjob" = skipped ] || overall=failure
   else
-    # A job that ended otherwise than by its own verdict, such as a timeout, may not have tried every flavor;
-    # a failed upload fails the job after all of them.
+    # A job that ended otherwise than by its own verdict after the upload, such as a timeout, is named;
+    # a failed upload fails the job, and says so already.
     case "$wjob" in
       success | skipped | '') ;;
       failure) [[ " ${WINBUILDER_RESULTS:-} " == *=failed\ * ]] || {
-        wlines+="- win-builder: job \`$wjob\`, later flavors not tried"$'\n'
+        wlines+="- win-builder: job \`$wjob\` after the upload"$'\n'
         overall=failure
       } ;;
-      *) wlines+="- win-builder: job \`$wjob\`, later flavors not tried"$'\n'; overall=failure ;;
+      *) wlines+="- win-builder: job \`$wjob\` after the upload"$'\n'; overall=failure ;;
     esac
   fi
   local murl=${MACBUILDER_URL:-} mstatus
