@@ -296,6 +296,9 @@ mkdir -p "$SCRATCH/pkg/fakepkg/R"
 printf 'Package: fakepkg\nVersion: 1.0.1\nMaintainer: Jane Doe <jane@example.org>\nVersioned: Version: 1.0.1\n' \
   >"$SCRATCH/pkg/fakepkg/DESCRIPTION"
 echo 'f <- function() 1' >"$SCRATCH/pkg/fakepkg/R/f.R"
+printf '#!/bin/sh\n' >"$SCRATCH/pkg/fakepkg/configure"
+chmod 755 "$SCRATCH/pkg/fakepkg/configure"
+touch -d '2026-01-02 03:04:05' "$SCRATCH/pkg/fakepkg" "$SCRATCH/pkg/fakepkg"/* "$SCRATCH/pkg/fakepkg/R"/*
 TARBALL=$SCRATCH/pkg/fakepkg_1.0.1.tar.gz
 tar -czf "$TARBALL" -C "$SCRATCH/pkg" fakepkg
 SHA=$(sha256sum "$TARBALL" | cut -d' ' -f1)
@@ -329,7 +332,12 @@ section "winbuilder repacks the tarball with the commit in its version"
 mkdir -p "$SCRATCH/x/checked" "$SCRATCH/x/uploaded"
 tar -xzf "$TARBALL" -C "$SCRATCH/x/checked"
 tar -xzf "$SCRATCH/stored/R-devel/$UPLOADED" -C "$SCRATCH/x/uploaded"
-is "the same files" "$(tar -tzf "$SCRATCH/stored/R-devel/$UPLOADED" | sort)" "$(tar -tzf "$TARBALL" | sort)"
+listing() { tar -tvzf "$1" | awk '{ print $1, $3, $4, $5, $6 }' | sed "s#$2#V#" | sort; }
+is "the same files, modes, sizes and times but DESCRIPTION's size" \
+  "$(listing "$SCRATCH/stored/R-devel/$UPLOADED" | grep -v DESCRIPTION)" "$(listing "$TARBALL" | grep -v DESCRIPTION)"
+is "and DESCRIPTION keeps its mode and time" "$(listing "$SCRATCH/stored/R-devel/$UPLOADED" | grep DESCRIPTION | cut -d' ' -f1,3,4)" \
+  "$(listing "$TARBALL" | grep DESCRIPTION | cut -d' ' -f1,3,4)"
+is "an executable stays executable" "$(tar -tvzf "$SCRATCH/stored/R-devel/$UPLOADED" | awk '/configure$/ { print $1 }')" "-rwxr-xr-x"
 is "the same contents but DESCRIPTION" "$(diff -r -x DESCRIPTION "$SCRATCH/x/checked" "$SCRATCH/x/uploaded" && echo same)" same
 is "DESCRIPTION differs in the Version field only" \
   "$(diff "$SCRATCH/x/checked/fakepkg/DESCRIPTION" "$SCRATCH/x/uploaded/fakepkg/DESCRIPTION")" "2c2
@@ -357,12 +365,27 @@ is "a four-component release keeps its four" "$(grep -v '^STOR-begin' "$SCRATCH/
 is "in DESCRIPTION too" "$(tar -xzOf "$SCRATCH/stored/R-devel/fakepkg_1.4.2.1.786.647.369.125.tar.gz" fakepkg/DESCRIPTION | sed -n 2p)" \
   "Version: 1.4.2.1.786.647.369.125"
 out=$(run winbuilder "$TARBALL" R-devel)
-has "no commit fails, saying so" "$out" "::error title=No commit SHA::The commit is '', not a full 40-character commit SHA."
+has "no commit fails, saying so" "$out" "::error title=No commit SHA::The commit given is no full 40-character commit SHA."
 is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(run winbuilder --commit "${COMMIT:0:10}" "$TARBALL" R-devel)
 has "a short commit fails" "$out" "::error title=No commit SHA::"
 out=$(run winbuilder "$TARBALL" R-devel --commit)
 has "a --commit without its value is a usage error" "$out" "exit 2"
+mkdir -p "$SCRATCH/pkgcr/fakepkg"
+printf 'Package: fakepkg\r\nVersion: 1.0.1\r\nMaintainer: Jane Doe <jane@example.org>\r\n' >"$SCRATCH/pkgcr/fakepkg/DESCRIPTION"
+tar -czf "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" -C "$SCRATCH/pkgcr" fakepkg
+out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" R-devel)
+is "a DESCRIPTION with CRLF line ends keeps them" "$(tar -xzOf "$SCRATCH/stored/R-devel/$UPLOADED" fakepkg/DESCRIPTION | od -c | tr -s ' ' | head -n 3)" \
+  "$(printf 'Package: fakepkg\r\nVersion: 1.0.1.786.647.369.125\r\nMaintainer: Jane Doe <jane@example.org>\r\n' | od -c | tr -s ' ' | head -n 3)"
+mkdir -p "$SCRATCH/pkgx/fakepkg"
+cp "$SCRATCH/pkg/fakepkg/DESCRIPTION" "$SCRATCH/pkgx/fakepkg/"
+touch "$SCRATCH/pkgx/extra"
+tar -czf "$SCRATCH/pkgx/fakepkg_1.0.1.tar.gz" -C "$SCRATCH/pkgx" fakepkg extra
+out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkgx/fakepkg_1.0.1.tar.gz" R-devel)
+has "a tarball with files outside the package's directory fails" "$out" \
+  "::error title=The tarball cannot be repacked::\`fakepkg_1.0.1.tar.gz\` cannot be listed, or holds files outside \`fakepkg/\`."
+has "naming them in the summary" "$(cat "$SUMMARY")" "extra"
+is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 
 section "winbuilder failures"
 echo denied >"$SCRATCH/ftp-mode"

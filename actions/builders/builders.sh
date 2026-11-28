@@ -101,14 +101,24 @@ commit_components() { # <sha>
 repack() { # <tarball> <version> <stage>
   local tarball=$1 version=$2 stage=$3 dir=$work/repack
   mkdir -p "$dir/src" "$dir/out"
+  # `R CMD build` puts everything under `<package>/`; anything else would be lost in the repack.
+  if ! tar -tzf "$tarball" >"$work/members" 2>"$work/tar.err" || grep -qv "^$pkg/" "$work/members"; then
+    grep -v "^$pkg/" "$work/members" | head -n 20 >>"$work/tar.err" || true
+    fail "$stage" "The tarball cannot be repacked" "\`$base\` cannot be listed, or holds files outside \`$pkg/\`." "$work/tar.err" -- \
+      "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
+  fi
   if ! tar -xzf "$tarball" -C "$dir/src" 2>"$work/tar.err"; then
     fail "$stage" "The tarball cannot be repacked" "\`$base\` cannot be extracted." "$work/tar.err" -- \
       "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
   fi
-  awk -v v="$version" '!done && /^Version:/ { print "Version: " v; done = 1; next } { print }' \
-    "$dir/src/$pkg/DESCRIPTION" >"$dir/DESCRIPTION"
-  touch -r "$dir/src/$pkg/DESCRIPTION" "$dir/DESCRIPTION"
-  mv "$dir/DESCRIPTION" "$dir/src/$pkg/DESCRIPTION"
+  # Only the first `Version:` line changes, and keeps a carriage return it ends in.
+  { awk -v v="$version" '!done && /^Version:/ { print "Version: " v ($0 ~ /\r$/ ? "\r" : ""); done = 1; next } { print }' \
+    "$dir/src/$pkg/DESCRIPTION" >"$dir/DESCRIPTION" &&
+    touch -r "$dir/src/$pkg/DESCRIPTION" "$dir/DESCRIPTION" &&
+    cat "$dir/DESCRIPTION" >"$dir/src/$pkg/DESCRIPTION" &&
+    touch -r "$dir/DESCRIPTION" "$dir/src/$pkg/DESCRIPTION"; } 2>"$work/tar.err" ||
+    fail "$stage" "The tarball cannot be repacked" "\`$base\`'s DESCRIPTION cannot be rewritten." "$work/tar.err" -- \
+      "Compare the tarball's file modes with what \`R CMD build\` writes."
   [ "$(dcf_field Version "$dir/src/$pkg/DESCRIPTION")" = "$version" ] ||
     fail "$stage" "The tarball cannot be repacked" "\`Version:\` in \`$base\`'s DESCRIPTION could not be set to $version." -- \
       "Compare DESCRIPTION with what \`R CMD build\` writes."
@@ -138,7 +148,7 @@ cmd_winbuilder() {
       "Pass \`R-devel\` alone, as win-builder's upload directory names it."
   flavor=R-devel
   valid_sha "$commit" ||
-    fail "Win-builder" "No commit SHA" "The commit is '$commit', not a full 40-character commit SHA." -- \
+    fail "Win-builder" "No commit SHA" "The commit given is no full 40-character commit SHA." -- \
       "Pass the commit the tarball was built from in the action's \`commit\` input."
   local base_url=${WINBUILDER_URL:-ftp://win-builder.r-project.org} upload uploaded checked
   read_tarball "$tarball" "Win-builder"

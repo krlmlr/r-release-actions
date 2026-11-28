@@ -179,7 +179,8 @@ to win-builder and to macbuilder, and reports both on the checklist pull request
 These checks inform the release and never gate it: the submission neither waits for them nor reads their results.
 Win-builder and macbuilder check on R-devel only.
 The workflow takes the tarball exactly as the submission does, from a green check run of the commit,
-so what the builders check is the file that CRAN receives.
+so what the builders check is the file that CRAN receives,
+except for the version win-builder sees, which encodes the commit as described below.
 
 ```yaml
 on:
@@ -242,13 +243,16 @@ Each component lies between 0 and 1023, so `R CMD check --as-cran` reports neith
 which a component of 1234 or more triggers, nor "Version contains leading zeroes".
 The CRAN submission and macbuilder get the checked tarball unchanged.
 The builders' comment names the file uploaded.
-To find the commit from the version in win-builder's email, turn its last four components back into ten hex digits:
+To find the commit from the version in win-builder's email, turn its last four components back into ten hex digits, in bash:
 
-```sh
+```bash
 v=1.0.1.786.647.369.125
 IFS=. read -r -a c <<<"$v"; set -- "${c[@]: -4}"
-git rev-parse "$(printf '%010x' $(($1 << 30 | $2 << 20 | $3 << 10 | $4)))"
+git rev-parse --verify "$(printf '%010x' $(($1 << 30 | $2 << 20 | $3 << 10 | $4)))^{commit}"
 ```
+
+Code that reads the package's own version, such as a test that compares `packageVersion()` with a fixed value,
+sees the longer version on win-builder only.
 
 The longer version is also greater than the checked one,
 so win-builder no longer reports "Insufficient package version" for a version that equals CRAN's.

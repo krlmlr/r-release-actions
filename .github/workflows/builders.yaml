@@ -1,5 +1,6 @@
 # Uploads an R package's checked tarball to win-builder and macbuilder, the tarball its check workflow built and checked,
 # never one built here, and reports both to the release's checklist pull request.
+# Win-builder gets it repacked with the commit encoded in `Version:`, its only change; macbuilder gets it unchanged.
 # A package calls it from a workflow it dispatches by hand, on the release branch or, on the fast path, on `main`;
 # the README describes the inputs, the permissions the caller grants, and what the run reads and writes.
 # These checks inform the release and never gate it: the CRAN submission neither waits for them nor reads their results.

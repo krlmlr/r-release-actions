@@ -16,7 +16,7 @@ inputs:
     description: "The tarball to upload, named `<package>_<version>.tar.gz`"
     required: true
   commit:
-    description: "`winbuilder`: the full SHA of the commit the tarball was built from, encoded into the uploaded file's version"
+    description: "`winbuilder`, which needs it: the full SHA of the commit the tarball was built from, encoded into the uploaded file's version"
     default: ""
   flavors:
     description: >-
