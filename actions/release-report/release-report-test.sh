@@ -159,7 +159,7 @@ section "builders"
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
   "[$(comment 60 someone '<!-- release-builders: fakepkg 1.0.1 -->\nmine')]"
 out=$(SHA=$SHA SHA256=$TSHA WINBUILDER_RESULTS='R-devel=uploaded R-release=uploaded' WINBUILDER_JOB=success \
-  WINBUILDER_TARBALL=fakepkg_1.0.1.786.647.369.125.tar.gz \
+  WINBUILDER_TARBALL=fakepkg_1.0.1.196.168.117.196.125.156.tar.gz \
   MACBUILDER_FLAVOR=r-devel MACBUILDER_URL=https://mac.example/macbuilder/results/1-a/ MACBUILDER_OUTCOME=ok \
   MACBUILDER_STATUS=OK MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 has "it succeeds" "$out" "exit 0"
@@ -169,8 +169,8 @@ has "with the marker and the overall result" "$w" "<!-- release-builders: fakepk
 ### ✅ Builder checks: fakepkg 1.0.1"
 has "the tarball" "$w" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, SHA-256 \`$TSHA\`"
 has "each win-builder flavor, naming the file whose version encodes the commit" "$w" \
-  "- win-builder \`R-devel\`: uploaded as \`fakepkg_1.0.1.786.647.369.125.tar.gz\`; the results arrive by email to the maintainer
-- win-builder \`R-release\`: uploaded as \`fakepkg_1.0.1.786.647.369.125.tar.gz\`;"
+  "- win-builder \`R-devel\`: uploaded as \`fakepkg_1.0.1.196.168.117.196.125.156.tar.gz\`; the results arrive by email to the maintainer
+- win-builder \`R-release\`: uploaded as \`fakepkg_1.0.1.196.168.117.196.125.156.tar.gz\`;"
 has "and macbuilder's status, linked" "$w" "- macbuilder \`r-devel\`: \`Status: OK\`, [result page](https://mac.example/macbuilder/results/1-a/)"
 has "saying the checks do not gate" "$w" "These checks inform the release and do not gate it."
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
@@ -221,13 +221,13 @@ out=$(WINBUILDER_JOB=failure MACBUILDER_JOB=failure run builders 7 fakepkg 1.0.1
 w=$(cat "$SCRATCH/writes")
 has "jobs that failed before uploading are named" "$w" "- win-builder: no upload, job \`failure\`"
 has "both" "$w" "- macbuilder \`r-devel\`: **no result**, job \`failure\`"
-out=$(DRY_RUN=true WINBUILDER_RESULTS='R-devel=dry-run' WINBUILDER_TARBALL=fakepkg_1.0.1.786.647.369.125.tar.gz \
+out=$(DRY_RUN=true WINBUILDER_RESULTS='R-devel=dry-run' WINBUILDER_TARBALL=fakepkg_1.0.1.196.168.117.196.125.156.tar.gz \
   WINBUILDER_JOB=success MACBUILDER_JOB=success run builders '' fakepkg 1.0.1)
 has "a dry run succeeds without a pull request" "$out" "exit 0"
 is "and writes nothing" "$(cat "$SCRATCH/writes")" ""
 has "it shows the comment in the summary" "$(cat "$SUMMARY")" "- macbuilder \`r-devel\`: not uploaded on a dry run"
 has "naming the file a real run uploads to win-builder" "$(cat "$SUMMARY")" \
-  "- win-builder \`R-devel\`: not uploaded on a dry run, a real run uploads it as \`fakepkg_1.0.1.786.647.369.125.tar.gz\`"
+  "- win-builder \`R-devel\`: not uploaded on a dry run, a real run uploads it as \`fakepkg_1.0.1.196.168.117.196.125.156.tar.gz\`"
 out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_TARBALL='x`y.tar.gz' WINBUILDER_JOB=success MACBUILDER_OUTCOME=ok \
   MACBUILDER_STATUS=OK MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 has "a file name no tarball has is left out" "$(cat "$SCRATCH/writes")" "- win-builder \`R-devel\`: uploaded; the results arrive"

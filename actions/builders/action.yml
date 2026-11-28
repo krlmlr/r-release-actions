@@ -36,7 +36,7 @@ outputs:
     description: "`winbuilder`: `<flavor>=<uploaded|failed|dry-run>` for each flavor tried, separated by spaces"
     value: ${{ steps.winbuilder.outputs.results }}
   tarball:
-    description: "`winbuilder`: the name of the file uploaded, `<package>_<version>.<four components of the commit>.tar.gz`"
+    description: "`winbuilder`: the name of the file uploaded, `<package>_<version>.<six components, the commit's first six bytes>.tar.gz`"
     value: ${{ steps.winbuilder.outputs.tarball }}
   url:
     description: "`macbuilder`: the result page"

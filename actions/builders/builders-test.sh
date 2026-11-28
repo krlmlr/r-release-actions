@@ -3,8 +3,8 @@
 # Check builders.sh offline, against a fake win-builder FTP server and a fake macbuilder on 127.0.0.1:
 # nothing reaches either service.
 #
-#   1. `winbuilder` uploads the tarball by anonymous FTP to `<flavor>/<file name>`, repacked with the commit's first 40 bits
-#      appended to its version as four components of 10 bits each, and otherwise unchanged;
+#   1. `winbuilder` uploads the tarball by anonymous FTP to `<flavor>/<file name>`, repacked with the commit's first six bytes
+#      appended to its version as six decimal components of one byte each, and otherwise unchanged;
 #      for each flavor, tries every flavor when one fails, fails loudly after them, and outputs the uploaded file's name
 #      and each flavor's result; an unknown flavor, and a missing or short commit, fail before sending.
 #   2. `macbuilder` posts `pkgfile` and `rflavor` with `Accept: application/json`, and outputs the result page's URL;
@@ -306,12 +306,11 @@ touch -d '2026-01-02 03:04:05' "$SCRATCH/pkg/fakepkg" "$SCRATCH/pkg/fakepkg"/* "
 TARBALL=$SCRATCH/pkg/fakepkg_1.0.1.tar.gz
 tar -czf "$TARBALL" -C "$SCRATCH/pkg" fakepkg
 SHA=$(sha256sum "$TARBALL" | cut -d' ' -f1)
-# The commit the tarball was built from, and its first 40 bits, c4a875c47d, as four components of 10 bits each:
-# 0xc4a875c47d is 786 * 2^30 + 647 * 2^20 + 369 * 2^10 + 125.
+# The commit the tarball was built from, and its first six bytes, c4 a8 75 c4 7d 9c, as six decimal components.
 COMMIT=c4a875c47d9c90ab66f647daaba6543598c1234e
-UPLOADED=fakepkg_1.0.1.786.647.369.125.tar.gz
-# The README's decoding, from the version in win-builder's email back to the commit's first ten hex digits.
-decode() { local c; IFS=. read -r -a c <<<"$1"; set -- "${c[@]: -4}"; printf '%010x' $(($1 << 30 | $2 << 20 | $3 << 10 | $4)); }
+UPLOADED=fakepkg_1.0.1.196.168.117.196.125.156.tar.gz
+# The README's decoding, from the version in win-builder's email back to the commit's first twelve hex digits.
+decode() { local c; IFS=. read -r -a c <<<"$1"; printf '%02x' "${c[@]: -6}"; }
 # A version that R CMD check's incoming checks accept: no component of 1234 or more, none with a leading zero.
 incoming_ok() {
   local c x
@@ -332,7 +331,7 @@ results=R-devel=uploaded R-release=uploaded"
 has "the summary names the URLs" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FTP/R-devel/$UPLOADED
 - R-release: uploaded to $FTP/R-release/$UPLOADED"
 has "and both files" "$(cat "$SUMMARY")" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, sha256 \`$SHA\`
-- Uploaded as \`$UPLOADED\`, sha256 \`$(sha256sum "$SCRATCH/stored/R-devel/$UPLOADED" | cut -d' ' -f1)\`: the same files, with commit \`c4a875c47d\` encoded in \`Version:\`"
+- Uploaded as \`$UPLOADED\`, sha256 \`$(sha256sum "$SCRATCH/stored/R-devel/$UPLOADED" | cut -d' ' -f1)\`: the same files, with commit \`c4a875c47d9c\` encoded in \`Version:\`"
 has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results for R-devel, R-release to Jane Doe <jane@example.org>"
 has "with a notice" "$out" "::notice title=Uploaded to win-builder::"
 
@@ -354,31 +353,31 @@ is "DESCRIPTION differs in the Version field only" \
   "$(diff "$SCRATCH/x/checked/fakepkg/DESCRIPTION" "$SCRATCH/x/uploaded/fakepkg/DESCRIPTION")" "2c2
 < Version: 1.0.1
 ---
-> Version: 1.0.1.786.647.369.125"
-is "the README's decoding gives back the commit's first ten hex digits" "$(decode 1.0.1.786.647.369.125)" "${COMMIT:0:10}"
-for c in 0000000000 ffffffffff 00a01b2c3d 0123456789; do
-  sha=${c}$(printf '0%.0s' $(seq 30))
+> Version: 1.0.1.196.168.117.196.125.156"
+is "the README's decoding gives back the commit's first twelve hex digits" "$(decode 1.0.1.196.168.117.196.125.156)" "${COMMIT:0:12}"
+for c in 000000000000 ffffffffffff 00a01b2c3d4e 0123456789ab 090a0f10ff00; do
+  sha=${c}$(printf '0%.0s' $(seq 28))
   out=$(run winbuilder --dry-run --commit "$sha" "$TARBALL" R-devel)
   v=$(sed -n 's/^tarball=fakepkg_\(.*\)\.tar\.gz$/\1/p' "$SCRATCH/output")
-  is "commit $c: four components, each below 1234 without a leading zero, decoded back" \
-    "$(incoming_ok "$v" && [[ $v =~ ^1\.0\.1(\.[0-9]+){4}$ ]] && decode "$v")" "$c"
+  is "commit $c: six components, each below 1234 without a leading zero, decoded back" \
+    "$(incoming_ok "$v" && [[ $v =~ ^1\.0\.1(\.[0-9]+){6}$ ]] && decode "$v")" "$c"
 done
 is "zero bits are zero components" "$(run winbuilder --dry-run --commit "$(printf '0%.0s' $(seq 40))" "$TARBALL" R-devel >/dev/null; head -n 1 "$SCRATCH/output")" \
-  "tarball=fakepkg_1.0.1.0.0.0.0.tar.gz"
-is "all one bits are 1023" "$(run winbuilder --dry-run --commit "$(printf 'f%.0s' $(seq 40))" "$TARBALL" R-devel >/dev/null; head -n 1 "$SCRATCH/output")" \
-  "tarball=fakepkg_1.0.1.1023.1023.1023.1023.tar.gz"
+  "tarball=fakepkg_1.0.1.0.0.0.0.0.0.tar.gz"
+is "all one bits are 255" "$(run winbuilder --dry-run --commit "$(printf 'f%.0s' $(seq 40))" "$TARBALL" R-devel >/dev/null; head -n 1 "$SCRATCH/output")" \
+  "tarball=fakepkg_1.0.1.255.255.255.255.255.255.tar.gz"
 mkdir -p "$SCRATCH/pkg4/fakepkg"
 printf 'Package: fakepkg\nVersion: 1.4.2.1\nMaintainer: Jane Doe <jane@example.org>\n' >"$SCRATCH/pkg4/fakepkg/DESCRIPTION"
 tar -czf "$SCRATCH/pkg4/fakepkg_1.4.2.1.tar.gz" -C "$SCRATCH/pkg4" fakepkg
 out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkg4/fakepkg_1.4.2.1.tar.gz" R-devel)
 is "a four-component release keeps its four" "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests" | sed 's/ sha256=.*//')" \
-  "STOR /R-devel/fakepkg_1.4.2.1.786.647.369.125.tar.gz"
-is "in DESCRIPTION too" "$(tar -xzOf "$SCRATCH/stored/R-devel/fakepkg_1.4.2.1.786.647.369.125.tar.gz" fakepkg/DESCRIPTION | sed -n 2p)" \
-  "Version: 1.4.2.1.786.647.369.125"
+  "STOR /R-devel/fakepkg_1.4.2.1.196.168.117.196.125.156.tar.gz"
+is "in DESCRIPTION too" "$(tar -xzOf "$SCRATCH/stored/R-devel/fakepkg_1.4.2.1.196.168.117.196.125.156.tar.gz" fakepkg/DESCRIPTION | sed -n 2p)" \
+  "Version: 1.4.2.1.196.168.117.196.125.156"
 out=$(run winbuilder "$TARBALL" R-devel)
 has "no commit fails, saying so" "$out" "::error title=No commit SHA::The commit given is no full 40-character commit SHA."
 is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
-out=$(run winbuilder --commit "${COMMIT:0:10}" "$TARBALL" R-devel)
+out=$(run winbuilder --commit "${COMMIT:0:12}" "$TARBALL" R-devel)
 has "a short commit fails" "$out" "::error title=No commit SHA::"
 out=$(run winbuilder "$TARBALL" R-devel --commit)
 has "a --commit without its value is a usage error" "$out" "exit 2"
@@ -387,7 +386,7 @@ printf 'Package: fakepkg\r\nVersion: 1.0.1\r\nMaintainer: Jane Doe <jane@example
 tar -czf "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" -C "$SCRATCH/pkgcr" fakepkg
 out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" R-devel)
 is "a DESCRIPTION with CRLF line ends keeps them" "$(tar -xzOf "$SCRATCH/stored/R-devel/$UPLOADED" fakepkg/DESCRIPTION | od -c)" \
-  "$(printf 'Package: fakepkg\r\nVersion: 1.0.1.786.647.369.125\r\nMaintainer: Jane Doe <jane@example.org>\r\n' | od -c)"
+  "$(printf 'Package: fakepkg\r\nVersion: 1.0.1.196.168.117.196.125.156\r\nMaintainer: Jane Doe <jane@example.org>\r\n' | od -c)"
 chmod 444 "$SCRATCH/pkgcr/fakepkg/DESCRIPTION"
 tar -czf "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" -C "$SCRATCH/pkgcr" fakepkg
 out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" R-devel)

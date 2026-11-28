@@ -8,10 +8,10 @@
 #     `R-devel`, `R-release` or `R-oldrelease`, as `devtools:::submit_winbuilder_ftp()` and `upload_ftp()` do
 #     (devtools 2.5.2, R/check-win.R). Win-builder emails the results to the maintainer named in the tarball.
 #     Its email names only the package and the version, so the file uploaded is the tarball repacked
-#     with the commit's first 40 bits appended to `Version:` in DESCRIPTION and to the file name,
-#     as four components of 10 bits each: commit c4a875c47d... turns 1.0.1 into 1.0.1.786.647.369.125.
+#     with the commit's first six bytes appended to `Version:` in DESCRIPTION and to the file name,
+#     as six decimal components of one byte each: commit c4a875c47d9c... turns 1.0.1 into 1.0.1.196.168.117.196.125.156.
 #     No component reaches 1234 or has a leading zero, so `R CMD check --as-cran` adds no NOTE for the version;
-#     the README shows how to turn the four components back into the commit.
+#     the README shows how to turn the six components back into the commit.
 #     Every flavor gets the same repacked file. A flavor given twice is uploaded once, and an unknown one fails before sending.
 #     Every flavor is tried, each with two retries on a failed connection only; any failed upload fails the stage after the others.
 #     Writes `tarball`, the uploaded file's name, and `results`, `<flavor>=<uploaded|failed|dry-run>` separated by spaces,
@@ -93,10 +93,9 @@ read_tarball() { # <tarball> <stage>
 
 # --- win-builder ----------------------------------------------------------
 
-# The commit's first 40 bits as four version components of 10 bits each, 0 to 1023, separated by dots.
+# The commit's first six bytes as six version components, 0 to 255 in decimal, separated by dots.
 commit_components() { # <sha>
-  local n=$((16#${1:0:10}))
-  printf '%d.%d.%d.%d' $(((n >> 30) & 1023)) $(((n >> 20) & 1023)) $(((n >> 10) & 1023)) $((n & 1023))
+  printf '%d.%d.%d.%d.%d.%d' "0x${1:0:2}" "0x${1:2:2}" "0x${1:4:2}" "0x${1:6:2}" "0x${1:8:2}" "0x${1:10:2}"
 }
 
 # Sets upload to the tarball <tarball> repacked as `<package>_<version>.tar.gz` with `Version: <version>` in DESCRIPTION,
@@ -188,7 +187,7 @@ cmd_winbuilder() {
   val "flavors" "${flavors[*]}"
   endgroup
   summary "### Win-builder${dry_run:+: dry run}" "" "- Tarball: \`$base\`, sha256 \`$checked\`" \
-    "- Uploaded as \`$uploaded\`, sha256 \`$sha\`: the same files, with commit \`${commit:0:10}\` encoded in \`Version:\`"
+    "- Uploaded as \`$uploaded\`, sha256 \`$sha\`: the same files, with commit \`${commit:0:12}\` encoded in \`Version:\`"
   output tarball "$uploaded"
 
   local results='' failed='' url rc attempt sent=()

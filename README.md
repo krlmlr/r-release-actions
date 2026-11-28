@@ -237,20 +237,20 @@ What a run does, job by job:
 - **preview**, on a dry run, shows that comment in the run's summary, with no permission.
 
 The file uploaded to win-builder, the same for every queue, is the checked tarball repacked with one change:
-the first 40 bits of the commit, ten hex digits, are appended to `Version:` in `DESCRIPTION` and to the file name
-as four components of 10 bits each.
-Commit `c4a875c47d…` turns `fakepkg_1.0.1.tar.gz` into `fakepkg_1.0.1.786.647.369.125.tar.gz`,
+the first six bytes of the commit, twelve hex digits, are appended to `Version:` in `DESCRIPTION` and to the file name
+as six components of one byte each, in decimal.
+Commit `c4a875c47d9c…` turns `fakepkg_1.0.1.tar.gz` into `fakepkg_1.0.1.196.168.117.196.125.156.tar.gz`,
 and a four-component release such as 1.4.2.1 keeps its four in front.
-Each component lies between 0 and 1023, so `R CMD check --as-cran` reports neither "Version contains large components",
+Each component lies between 0 and 255, so `R CMD check --as-cran` reports neither "Version contains large components",
 which a component of 1234 or more triggers, nor "Version contains leading zeroes".
 The CRAN submission and macbuilder get the checked tarball unchanged.
 The builders' comment names the file uploaded.
-To find the commit from the version in win-builder's email, turn its last four components back into ten hex digits, in bash:
+To find the commit from the version in win-builder's email, turn its last six components back into twelve hex digits, in bash:
 
 ```bash
-v=1.0.1.786.647.369.125
-IFS=. read -r -a c <<<"$v"; set -- "${c[@]: -4}"
-git rev-parse --verify "$(printf '%010x' $(($1 << 30 | $2 << 20 | $3 << 10 | $4)))^{commit}"
+v=1.0.1.196.168.117.196.125.156
+IFS=. read -r -a c <<<"$v"
+git rev-parse --verify "$(printf '%02x' "${c[@]: -6}")^{commit}"
 ```
 
 Code that reads the package's own version, such as a test that compares `packageVersion()` with a fixed value,
