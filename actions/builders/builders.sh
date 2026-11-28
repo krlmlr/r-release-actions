@@ -4,16 +4,18 @@
 # These checks inform the release and never gate it: a check result is reported, never turned into a failure.
 #
 #   winbuilder [--dry-run] --commit <sha> <tarball> <flavor>...
-#     Upload the tarball by anonymous FTP to `<WINBUILDER_URL>/<flavor>/<file name>`, where the flavor is `R-devel`,
-#     the only one used, as `devtools:::submit_winbuilder_ftp()` and `upload_ftp()` do for `check_win_devel()`
+#     Upload the tarball by anonymous FTP to `<WINBUILDER_URL>/<flavor>/<file name>` for each flavor,
+#     `R-devel`, `R-release` or `R-oldrelease`, as `devtools:::submit_winbuilder_ftp()` and `upload_ftp()` do
 #     (devtools 2.5.2, R/check-win.R). Win-builder emails the results to the maintainer named in the tarball.
 #     Its email names only the package and the version, so the file uploaded is the tarball repacked
 #     with the commit's first 40 bits appended to `Version:` in DESCRIPTION and to the file name,
 #     as four components of 10 bits each: commit c4a875c47d... turns 1.0.1 into 1.0.1.786.647.369.125.
 #     No component reaches 1234 or has a leading zero, so `R CMD check --as-cran` adds no NOTE for the version;
 #     the README shows how to turn the four components back into the commit.
-#     Any flavor but a single `R-devel` fails before sending. A failed connection is retried twice; a failed upload fails the stage.
-#     Writes `results`, `<flavor>=<uploaded|failed|dry-run>`, and `tarball`, the uploaded file's name, to GITHUB_OUTPUT.
+#     Every flavor gets the same repacked file. A flavor given twice is uploaded once, and an unknown one fails before sending.
+#     Every flavor is tried, each with two retries on a failed connection only; any failed upload fails the stage after the others.
+#     Writes `tarball`, the uploaded file's name, and `results`, `<flavor>=<uploaded|failed|dry-run>` separated by spaces,
+#     to GITHUB_OUTPUT, the results after each flavor, so that a job cancelled during a later upload still reports the earlier ones.
 #   macbuilder [--dry-run] <tarball> <flavor>
 #     Post the tarball to MACBUILDER_URL as `devtools:::check_mac()` does (devtools 2.5.2, R/check-mac.R),
 #     which `check_mac_devel()` calls for `r-devel` and `check_mac_release()` for `r-release`:
@@ -139,7 +141,7 @@ repack() { # <tarball> <version> <stage>
 }
 
 cmd_winbuilder() {
-  local dry_run='' commit='' tarball='' flavors=() flavor
+  local dry_run='' commit='' tarball='' flavors=() f
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) dry_run=1 ;;
@@ -151,12 +153,22 @@ cmd_winbuilder() {
   done
   [ -n "$tarball" ] || usage
   [ ${#flavors[@]} -gt 0 ] ||
-    fail "Win-builder" "No win-builder flavor" "No flavor was given." -- \
-      "Pass \`R-devel\` in the action's \`flavors\` input."
-  { [ ${#flavors[@]} -eq 1 ] && [ "${flavors[0]}" = R-devel ]; } ||
-    fail "Win-builder" "No win-builder flavor" "\`${flavors[*]}\` is not \`R-devel\`, the only flavor win-builder checks on here." -- \
-      "Pass \`R-devel\` alone, as win-builder's upload directory names it."
-  flavor=R-devel
+    fail "Win-builder" "No win-builder flavor" "No flavor was given, so there is nothing to upload." -- \
+      "Pass at least one of \`R-devel\`, \`R-release\` and \`R-oldrelease\`, separated by spaces, in the action's \`flavors\` input."
+  local unique=() u seen
+  for f in "${flavors[@]}"; do
+    seen=''
+    for u in "${unique[@]+"${unique[@]}"}"; do [ "$u" != "$f" ] || seen=1; done
+    [ -n "$seen" ] || unique+=("$f")
+  done
+  flavors=("${unique[@]}")
+  for f in "${flavors[@]}"; do
+    case "$f" in
+      R-devel | R-release | R-oldrelease) ;;
+      *) fail "Win-builder" "No win-builder flavor" "\`$f\` is none of \`R-devel\`, \`R-release\` and \`R-oldrelease\`." -- \
+        "Pass win-builder's flavors as its upload directories name them." ;;
+    esac
+  done
   valid_sha "$commit" ||
     fail "Win-builder" "No commit SHA" "The commit given is no full 40-character commit SHA." -- \
       "Pass the commit the tarball was built from in the action's \`commit\` input."
@@ -173,51 +185,62 @@ cmd_winbuilder() {
   val "uploaded as" "$uploaded"
   val "sha256" "$sha"
   val "maintainer" "$maint"
-  val "flavor" "$flavor"
+  val "flavors" "${flavors[*]}"
   endgroup
   summary "### Win-builder${dry_run:+: dry run}" "" "- Tarball: \`$base\`, sha256 \`$checked\`" \
     "- Uploaded as \`$uploaded\`, sha256 \`$sha\`: the same files, with commit \`${commit:0:10}\` encoded in \`Version:\`"
   output tarball "$uploaded"
 
-  local url=$base_url/$flavor/$uploaded rc
+  local results='' failed='' url rc attempt
+  for f in "${flavors[@]}"; do
+    url="$base_url/$f/$uploaded"
+    if [ -n "$dry_run" ]; then
+      say "Dry run: would upload $uploaded to $url"
+      summary "- $f: would upload to $url"
+      results+="$f=dry-run "
+      output results "${results% }"
+      continue
+    fi
+    group "Win-builder: upload to $f"
+    val "url" "$url"
+    # Anonymous FTP upload, as devtools' upload_ftp() does with curl's `upload = TRUE`;
+    # at most three attempts of five minutes each, which the workflow's job timeout covers for three flavors.
+    # Only a failed connection (curl's 6 and 7) is retried: after any other error, such as a timeout (28),
+    # part of the file may have arrived, and a retry would send it again under the same name.
+    for attempt in 1 2 3; do
+      rc=0
+      curl --silent --show-error --connect-timeout 30 --max-time "${WINBUILDER_MAX_TIME:-300}" \
+        --upload-file "$upload" "$url" >"$work/ftp.out" 2>"$work/ftp.err" || rc=$?
+      case "$rc" in
+        6 | 7) [ "$attempt" -lt 3 ] || break ;;
+        *) break ;;
+      esac
+      say "  attempt $attempt: curl exited with status $rc, no connection: $(head -n 1 "$work/ftp.err"); retrying"
+      sleep "${WINBUILDER_RETRY_SECONDS:-10}"
+    done
+    endgroup
+    if [ "$rc" -eq 0 ]; then
+      say "Uploaded $uploaded to $url"
+      summary "- $f: uploaded to $url"
+      results+="$f=uploaded "
+    else
+      failure "Win-builder" "The upload to win-builder failed" \
+        "curl exited with status $rc uploading \`$uploaded\` to $url: $(head -n 1 "$work/ftp.err")" "$work/ftp.err" -- \
+        "Check win-builder's status at https://win-builder.r-project.org/, then dispatch this workflow again." \
+        "Win-builder checks inform the release and do not gate it; the CRAN submission does not wait for them."
+      results+="$f=failed "
+      failed=1
+    fi
+    output results "${results% }"
+  done
   if [ -n "$dry_run" ]; then
-    say "Dry run: would upload $uploaded to $url"
-    summary "- $flavor: would upload to $url" \
-      "" "Nothing was sent. A real run uploads the file by anonymous FTP; win-builder emails the results to $maint." ""
-    output results "$flavor=dry-run"
-    notice "Dry run" "Nothing was sent to win-builder. A real run uploads $uploaded for $flavor."
+    summary "" "Nothing was sent. A real run uploads the file by anonymous FTP; win-builder emails the results to $maint." ""
+    notice "Dry run" "Nothing was sent to win-builder. A real run uploads $uploaded for ${flavors[*]}."
     return 0
   fi
-  group "Win-builder: upload to $flavor"
-  val "url" "$url"
-  # Anonymous FTP upload, as devtools' upload_ftp() does with curl's `upload = TRUE`;
-  # at most three attempts of five minutes each, which the workflow's job timeout covers.
-  # Only a failed connection (curl's 6 and 7) is retried: after any other error, such as a timeout (28),
-  # part of the file may have arrived, and a retry would send it again under the same name.
-  local attempt
-  for attempt in 1 2 3; do
-    rc=0
-    curl --silent --show-error --connect-timeout 30 --max-time "${WINBUILDER_MAX_TIME:-300}" \
-      --upload-file "$upload" "$url" >"$work/ftp.out" 2>"$work/ftp.err" || rc=$?
-    case "$rc" in
-      6 | 7) [ "$attempt" -lt 3 ] || break ;;
-      *) break ;;
-    esac
-    say "  attempt $attempt: curl exited with status $rc, no connection: $(head -n 1 "$work/ftp.err"); retrying"
-    sleep "${WINBUILDER_RETRY_SECONDS:-10}"
-  done
-  endgroup
-  if [ "$rc" -ne 0 ]; then
-    output results "$flavor=failed"
-    fail "Win-builder" "The upload to win-builder failed" \
-      "curl exited with status $rc uploading \`$uploaded\` to $url: $(head -n 1 "$work/ftp.err")" "$work/ftp.err" -- \
-      "Check win-builder's status at https://win-builder.r-project.org/, then dispatch this workflow again." \
-      "Win-builder checks inform the release and do not gate it; the CRAN submission does not wait for them."
-  fi
-  say "Uploaded $uploaded to $url"
-  summary "- $flavor: uploaded to $url" "" "Win-builder emails the results to $maint, usually within 30 minutes." ""
-  output results "$flavor=uploaded"
-  notice "Uploaded to win-builder" "$uploaded for $flavor; the results arrive by email to the maintainer."
+  summary "" "Win-builder emails the results to $maint, usually within 30 minutes." ""
+  [ -z "$failed" ] || exit 1
+  notice "Uploaded to win-builder" "$uploaded for ${flavors[*]}; the results arrive by email to the maintainer."
 }
 
 # --- macbuilder -----------------------------------------------------------

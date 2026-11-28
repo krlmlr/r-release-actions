@@ -21,7 +21,7 @@
 #   builders <pr> <package> <version>
 #     The builder uploads' one comment, found by `<!-- release-builders: <package> <version> -->`
 #     among github-actions[bot]'s comments, created or updated in place:
-#     win-builder's R-devel upload from WINBUILDER_RESULTS, and macbuilder's result.
+#     each win-builder flavor's upload from WINBUILDER_RESULTS, and macbuilder's result.
 #     DRY_RUN `true` prints the comment to the log and the step summary, writes nothing, and takes an empty <pr>.
 #   attempt <pr> <package> <version> <sha> <sha256> <tarball name>
 #     A new comment for a submission attempt, which nothing edits afterwards:
@@ -115,7 +115,7 @@ upsert_comment() { # <pr> <marker> <body file> <what> <stands>
   say "$how $what on #$pr."
 }
 
-# The builder uploads' one comment on <pr>: win-builder's R-devel upload, whose results arrive by email,
+# The builder uploads' one comment on <pr>: win-builder's uploads, whose results arrive by email,
 # and macbuilder's check result, created or updated in place; DRY_RUN `true` prints it and writes nothing.
 cmd_builders() {
   [ $# -eq 3 ] || usage
@@ -144,17 +144,15 @@ cmd_builders() {
     wlines="- win-builder: no upload, job \`${wjob:-not run}\`"$'\n'
     [ "$wjob" = skipped ] || overall=failure
   else
-    # A job that ended otherwise than by its own verdict, such as a timeout, is named;
-    # a failed upload fails the job, and says so already.
-    local after=''
-    [[ " ${WINBUILDER_RESULTS:-} " != *=uploaded\ * ]] || after=" after the upload"
+    # A job that ended otherwise than by its own verdict, such as a timeout, may not have tried every flavor;
+    # a failed upload fails the job after all of them.
     case "$wjob" in
       success | skipped | '') ;;
       failure) [[ " ${WINBUILDER_RESULTS:-} " == *=failed\ * ]] || {
-        wlines+="- win-builder: job \`$wjob\`$after"$'\n'
+        wlines+="- win-builder: job \`$wjob\`, later flavors not tried"$'\n'
         overall=failure
       } ;;
-      *) wlines+="- win-builder: job \`$wjob\`$after"$'\n'; overall=failure ;;
+      *) wlines+="- win-builder: job \`$wjob\`, later flavors not tried"$'\n'; overall=failure ;;
     esac
   fi
   local murl=${MACBUILDER_URL:-} mstatus

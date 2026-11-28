@@ -158,7 +158,7 @@ has "a comment that cannot be written fails, with GitHub's error" "$out" \
 section "builders"
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
   "[$(comment 60 someone '<!-- release-builders: fakepkg 1.0.1 -->\nmine')]"
-out=$(SHA=$SHA SHA256=$TSHA WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=success \
+out=$(SHA=$SHA SHA256=$TSHA WINBUILDER_RESULTS='R-devel=uploaded R-release=uploaded' WINBUILDER_JOB=success \
   WINBUILDER_TARBALL=fakepkg_1.0.1.786.647.369.125.tar.gz \
   MACBUILDER_FLAVOR=r-devel MACBUILDER_URL=https://mac.example/macbuilder/results/1-a/ MACBUILDER_OUTCOME=ok \
   MACBUILDER_STATUS=OK MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
@@ -168,8 +168,9 @@ has "it posts a comment, leaving someone else's alone" "$w" "POST repos/owner/fa
 has "with the marker and the overall result" "$w" "<!-- release-builders: fakepkg 1.0.1 -->
 ### ✅ Builder checks: fakepkg 1.0.1"
 has "the tarball" "$w" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, SHA-256 \`$TSHA\`"
-has "win-builder's upload, naming the file whose version encodes the commit" "$w" \
-  "- win-builder \`R-devel\`: uploaded as \`fakepkg_1.0.1.786.647.369.125.tar.gz\`; the results arrive by email to the maintainer"
+has "each win-builder flavor, naming the file whose version encodes the commit" "$w" \
+  "- win-builder \`R-devel\`: uploaded as \`fakepkg_1.0.1.786.647.369.125.tar.gz\`; the results arrive by email to the maintainer
+- win-builder \`R-release\`: uploaded as \`fakepkg_1.0.1.786.647.369.125.tar.gz\`;"
 has "and macbuilder's status, linked" "$w" "- macbuilder \`r-devel\`: \`Status: OK\`, [result page](https://mac.example/macbuilder/results/1-a/)"
 has "saying the checks do not gate" "$w" "These checks inform the release and do not gate it."
 answer "repos/owner/fakepkg/issues/7/comments?per_page=100" \
@@ -191,7 +192,7 @@ out=$(WINBUILDER_RESULTS='R-devel=uploaded' MACBUILDER_OUTCOME=note MACBUILDER_S
   MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 has "the status loses its backticks and is cut to 200 characters" "$(cat "$SCRATCH/writes")" \
   "\`Status: 1 NOTE$(printf 'y%.0s' $(seq 194))\`"
-out=$(WINBUILDER_RESULTS='R-devel=failed' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=error \
+out=$(WINBUILDER_RESULTS='R-devel=failed R-release=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=error \
   MACBUILDER_STATUS='1 ERROR' MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 w=$(cat "$SCRATCH/writes")
 has "a failed upload or an ERROR is a failure" "$w" "### ❌ Builder checks"
@@ -201,19 +202,15 @@ out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=cancelled MACBUILDER_
   MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 w=$(cat "$SCRATCH/writes")
 has "a win-builder job cancelled after an upload is a failure" "$w" "### ❌ Builder checks"
-has "naming the job" "$w" "- win-builder \`R-devel\`: uploaded; the results arrive by email to the maintainer
-- win-builder: job \`cancelled\` after the upload"
-out=$(WINBUILDER_RESULTS='R-devel=failed' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+has "naming the job and the flavors it did not try" "$w" "- win-builder \`R-devel\`: uploaded; the results arrive by email to the maintainer
+- win-builder: job \`cancelled\`, later flavors not tried"
+out=$(WINBUILDER_RESULTS='R-devel=failed R-release=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
   MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
-hasnt "a job failed by a failed upload is not named again" "$(cat "$SCRATCH/writes")" "job \`failure\`"
-out=$(WINBUILDER_RESULTS='R-devel=failed' WINBUILDER_JOB=cancelled MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
-  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
-has "a job cancelled after a failed upload is named without an upload" "$(cat "$SCRATCH/writes")" "- win-builder: job \`cancelled\`
-"
+hasnt "a job failed by a failed upload tried every flavor" "$(cat "$SCRATCH/writes")" "later flavors not tried"
 out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
   MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 w=$(cat "$SCRATCH/writes")
-has "a job that failed after an upload is named" "$w" "- win-builder: job \`failure\` after the upload"
+has "a job that failed without a failed upload may not have tried every flavor" "$w" "- win-builder: job \`failure\`, later flavors not tried"
 has "and is a failure" "$w" "### ❌ Builder checks"
 out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=success MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
   MACBUILDER_JOB=cancelled run builders 7 fakepkg 1.0.1)

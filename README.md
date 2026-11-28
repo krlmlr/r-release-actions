@@ -177,7 +177,8 @@ Each step writes what it read, checked and did to the run's summary, with how to
 [`.github/workflows/builders.yaml`](.github/workflows/builders.yaml) uploads the same checked tarball
 to win-builder and to macbuilder, and reports both on the checklist pull request.
 These checks inform the release and never gate it: the submission neither waits for them nor reads their results.
-Win-builder and macbuilder check on R-devel only.
+Win-builder checks on the queues that `queues` names, R-devel by default, and macbuilder on R-devel only.
+Callers use R-devel as a rule, and the other win-builder queues only on purpose.
 The workflow takes the tarball exactly as the submission does, from a green check run of the commit,
 so what the builders check is the file that CRAN receives,
 except for the version win-builder sees, which encodes the commit as described below.
@@ -205,8 +206,8 @@ jobs:
 Inputs:
 
 - `sha`, `dry-run`, `check-workflow` and `check-run-id`: as for the CRAN submission.
-- `queues`: deprecated, and kept only so that a caller that passes it as `R-devel` or empty keeps working.
-  Win-builder checks on R-devel only, and any other value fails the run in the **version** job, before any upload.
+- `queues`: the win-builder queues to upload to, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`;
+  by default `R-devel`, which callers keep as a rule, passing the others only on purpose.
 - `macbuilder-timeout-minutes`: how long to wait for macbuilder's result, by default 60 and at most 150.
 
 What a run does, job by job:
@@ -215,8 +216,9 @@ What a run does, job by job:
   because the builders may run days before the submission.
   It finds the checklist pull request, and runs on without one.
 - **tarball** finds the check run and its tarball artifact, and verifies the file, as the submission's job of that name does.
-- **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/R-devel/`,
-  as `devtools::check_win_devel()` does, retrying a refused connection or an unresolved host twice.
+- **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/<queue>/` for each queue in `queues`,
+  as `devtools::check_win_devel()` does for `R-devel`, retrying a refused connection or an unresolved host twice.
+  It tries every queue, and fails after the others when one upload failed.
   Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
   A failed upload fails the job.
   The email names only the package and its version, so the file uploaded identifies the commit in its version,
@@ -231,10 +233,10 @@ What a run does, job by job:
   with the result page to read, and a wait that ends without a result are reported with a warning,
   and do not fail the job; a failed upload does.
 - **report**, on a real run with a checklist pull request that nobody cancelled, creates or updates the workflow's one comment there,
-  marked `<!-- release-builders: <package> X.Y.Z -->`: the win-builder upload, and macbuilder's status with a link to its result page.
+  marked `<!-- release-builders: <package> X.Y.Z -->`: each win-builder upload, and macbuilder's status with a link to its result page.
 - **preview**, on a dry run, shows that comment in the run's summary, with no permission.
 
-The file uploaded to win-builder is the checked tarball repacked with one change:
+The file uploaded to win-builder, the same for every queue, is the checked tarball repacked with one change:
 the first 40 bits of the commit, ten hex digits, are appended to `Version:` in `DESCRIPTION` and to the file name
 as four components of 10 bits each.
 Commit `c4a875c47d…` turns `fakepkg_1.0.1.tar.gz` into `fakepkg_1.0.1.786.647.369.125.tar.gz`,

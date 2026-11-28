@@ -3,10 +3,10 @@
 # Check builders.sh offline, against a fake win-builder FTP server and a fake macbuilder on 127.0.0.1:
 # nothing reaches either service.
 #
-#   1. `winbuilder` uploads the tarball by anonymous FTP to `R-devel/<file name>`, repacked with the commit's first 40 bits
+#   1. `winbuilder` uploads the tarball by anonymous FTP to `<flavor>/<file name>`, repacked with the commit's first 40 bits
 #      appended to its version as four components of 10 bits each, and otherwise unchanged;
-#      it fails loudly when the upload fails, and outputs the result and the uploaded file's name;
-#      any other flavor, and a missing or short commit, fail before sending.
+#      for each flavor, tries every flavor when one fails, fails loudly after them, and outputs the uploaded file's name
+#      and each flavor's result; an unknown flavor, and a missing or short commit, fail before sending.
 #   2. `macbuilder` posts `pkgfile` and `rflavor` with `Accept: application/json`, and outputs the result page's URL;
 #      a 502 or another refusal, an answer without a result URL or that is no JSON,
 #      and a URL on another host, with another scheme or with user info fail.
@@ -319,13 +319,17 @@ incoming_ok() {
 }
 
 section "winbuilder uploads by anonymous FTP, as devtools' submit_winbuilder_ftp() does"
-out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-release)
 has "it succeeds" "$out" "exit 0"
-is "one STOR, into R-devel's directory, of the tarball with the commit in its version" \
-  "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests" | sed 's/ sha256=.*//')" "STOR /R-devel/$UPLOADED"
-is "the result and the uploaded file's name" "$(cat "$SCRATCH/output")" "tarball=$UPLOADED
-results=R-devel=uploaded"
-has "the summary names the URL" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FTP/R-devel/$UPLOADED"
+STORED=$(sha256sum "$SCRATCH/stored/R-devel/$UPLOADED" | cut -d' ' -f1)
+is "one STOR per flavor, into the flavor's directory, of the same tarball with the commit in its version" \
+  "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests")" "STOR /R-devel/$UPLOADED sha256=$STORED
+STOR /R-release/$UPLOADED sha256=$STORED"
+is "the uploaded file's name, and the results written after each flavor" "$(cat "$SCRATCH/output")" "tarball=$UPLOADED
+results=R-devel=uploaded
+results=R-devel=uploaded R-release=uploaded"
+has "the summary names the URLs" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FTP/R-devel/$UPLOADED
+- R-release: uploaded to $FTP/R-release/$UPLOADED"
 has "and both files" "$(cat "$SUMMARY")" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, sha256 \`$SHA\`
 - Uploaded as \`$UPLOADED\`, sha256 \`$(sha256sum "$SCRATCH/stored/R-devel/$UPLOADED" | cut -d' ' -f1)\`: the same files, with commit \`c4a875c47d\` encoded in \`Version:\`"
 has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results to Jane Doe <jane@example.org>"
@@ -400,25 +404,23 @@ is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 
 section "winbuilder failures"
 echo denied >"$SCRATCH/ftp-mode"
-out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-release)
 has "a refused upload fails" "$out" "exit 1"
 has "loudly, naming the URL" "$out" "::error title=The upload to win-builder failed::curl exited with status"
-is "and outputs the result" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed"
+has "for every flavor tried" "$(grep -c 'The upload to win-builder failed' <<<"$out")" 2
+is "and outputs the results" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed R-release=failed"
 echo ok >"$SCRATCH/ftp-mode"
-for f in R-release R-oldrelease R-patched; do
-  out=$(run winbuilder --commit "$COMMIT" "$TARBALL" "$f")
-  has "$f fails: win-builder checks on R-devel only" "$out" "::error title=No win-builder flavor::\`$f\` is not \`R-devel\`"
-  is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
-done
-out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-release)
-has "a second flavor fails, naming both" "$out" "::error title=No win-builder flavor::\`R-devel R-release\` is not \`R-devel\`"
-is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-patched)
+has "an unknown flavor fails" "$out" "::error title=No win-builder flavor::\`R-patched\` is none of"
+is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" "R-devel ")
 has "a flavor with a space is none" "$out" "::error title=No win-builder flavor::"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" "")
-has "an empty one is no flavor" "$out" "::error title=No win-builder flavor::No flavor was given."
-is "and nothing is sent" "$(cat "$SCRATCH/ftp-requests")" ""
+has "an empty one is no flavor" "$out" "::error title=No win-builder flavor::No flavor was given"
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-oldrelease R-devel)
+is "a flavor given twice is uploaded once" "$(grep -c '^STOR ' "$SCRATCH/ftp-requests")" 2
+is "and reported once" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=uploaded R-oldrelease=uploaded"
 out=$(WINBUILDER_URL=ftp://127.0.0.1:1 run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
 has "an unreachable server fails" "$out" "exit 1"
 has "after two retries of the connection" "$out" "  attempt 2: curl exited with status 7, no connection"
@@ -443,12 +445,12 @@ out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkg/fakepkg_1.0.2.tar.gz" R-de
 has "a tarball of another release fails" "$out" "::error title=The tarball is of another release::"
 
 section "winbuilder dry run"
-out=$(run winbuilder --dry-run --commit "$COMMIT" "$TARBALL" R-devel)
+out=$(run winbuilder --dry-run --commit "$COMMIT" "$TARBALL" R-devel R-release)
 has "it succeeds" "$out" "exit 0"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
-has "it says what it would upload, and where" "$(cat "$SUMMARY")" "- R-devel: would upload to $FTP/R-devel/$UPLOADED"
-is "the result says so, with the file's name" "$(cat "$SCRATCH/output")" "tarball=$UPLOADED
-results=R-devel=dry-run"
+has "it says what it would upload, and where" "$(cat "$SUMMARY")" "- R-release: would upload to $FTP/R-release/$UPLOADED"
+is "the results say so, with the file's name" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=dry-run R-release=dry-run"
+is "which comes first" "$(head -n 1 "$SCRATCH/output")" "tarball=$UPLOADED"
 has "with a notice" "$out" "::notice title=Dry run::Nothing was sent to win-builder."
 
 section "macbuilder posts as devtools' check_mac() does"

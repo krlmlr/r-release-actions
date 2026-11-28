@@ -9,8 +9,8 @@
 #   version     reads the version, only warning about dates, and finds the checklist pull request, if there is one
 #   tarball     finds the green push or dispatch run of the check workflow on the commit, and its tarball artifact,
 #               exactly as the CRAN submission does
-#   winbuilder  uploads the tarball by anonymous FTP to win-builder's R-devel queue, repacked with the commit encoded in its version,
-#               since the results arrive by email that names only the package and the version
+#   winbuilder  uploads the tarball by anonymous FTP to each win-builder queue in `queues`, R-devel by default,
+#               repacked with the commit encoded in its version, since the results arrive by email that names only the package and the version
 #   macbuilder  uploads the tarball to macbuilder's r-devel, and polls its result page until the check ends or the wait times out
 #   report      a real run only: creates or updates the builders' one comment on the checklist pull request
 #   preview     a dry run only, with no permission: shows the comment a real run would write
@@ -39,9 +39,9 @@ on:
         required: false
         type: string
         default: ""
-      # Deprecated: kept so that a caller that passes `R-devel` or nothing keeps working, since a removed input fails the call.
+      # Callers use R-devel as a rule, and the other queues only on purpose.
       queues:
-        description: "Deprecated: win-builder checks on R-devel only; `R-devel` or empty, and any other value fails the run"
+        description: "The win-builder queues to upload to, separated by spaces: `R-devel` as a rule, `R-release` or `R-oldrelease` only on purpose"
         required: false
         type: string
         default: R-devel
@@ -72,20 +72,13 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       pr: ${{ steps.checklist.outputs.pr }}
     steps:
-      - name: Refuse a SHA that is not one, and a win-builder queue other than R-devel
+      - name: Refuse a SHA that is not one
         env:
           SHA: ${{ inputs.sha }}
           DRY_RUN: ${{ inputs.dry-run }}
-          QUEUES: ${{ inputs.queues }}
         run: |
           if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error title=No full commit SHA::The input sha is '$SHA', not a full 40-character commit SHA."
-            exit 1
-          fi
-          read -r -d '' -a queues <<<"$QUEUES" || true
-          if [ ${#queues[@]} -gt 1 ] || [ "${queues[0]:-R-devel}" != R-devel ]; then
-            echo "::error title=Win-builder checks on R-devel only::The input queues, printed in this step's log, is not R-devel. Win-builder checks on R-devel only, as macbuilder does, and queues is deprecated: drop it from the calling workflow, or pass R-devel."
-            printf 'queues: %q\n' "$QUEUES"
             exit 1
           fi
           if [ "$DRY_RUN" = true ]; then
@@ -149,8 +142,8 @@ jobs:
     name: Upload to win-builder
     needs: [version, tarball]
     runs-on: ubuntu-24.04
-    # At most three five-minute attempts, after the download.
-    timeout-minutes: 20
+    # Up to three queues, each of at most three five-minute attempts, after the download.
+    timeout-minutes: 55
     permissions:
       actions: read
     outputs:
@@ -176,7 +169,7 @@ jobs:
           builder: winbuilder
           tarball: ${{ steps.tarball.outputs.tarball }}
           commit: ${{ inputs.sha }}
-          flavors: R-devel
+          flavors: ${{ inputs.queues }}
           dry-run: ${{ inputs.dry-run }}
 
   macbuilder:

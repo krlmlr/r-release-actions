@@ -20,7 +20,7 @@ inputs:
     default: ""
   flavors:
     description: >-
-      `winbuilder`: `R-devel`, the only flavor it checks on;
+      `winbuilder`: the flavors, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`;
       `macbuilder`: one flavor, `r-devel` or `r-release`
     required: true
   timeout-minutes:
@@ -32,7 +32,7 @@ inputs:
 
 outputs:
   results:
-    description: "`winbuilder`: `R-devel=<uploaded|failed|dry-run>`"
+    description: "`winbuilder`: `<flavor>=<uploaded|failed|dry-run>` for each flavor tried, separated by spaces"
     value: ${{ steps.winbuilder.outputs.results }}
   tarball:
     description: "`winbuilder`: the name of the file uploaded, `<package>_<version>.<four components of the commit>.tar.gz`"
