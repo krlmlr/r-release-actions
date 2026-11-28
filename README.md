@@ -218,6 +218,8 @@ What a run does, job by job:
   as `devtools::check_win_devel()` does, retrying a refused connection or an unresolved host twice.
   Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
   A failed upload fails the job.
+  The email names only the package and its version, so the file uploaded identifies the commit in its version,
+  as described after this list.
 - **macbuilder** posts the tarball to `https://mac.r-project.org/macbuilder/v1/submit` for `r-devel`,
   as `devtools::check_mac_devel()` does,
   and polls the result page it answers with, once a minute, until the page shows a finished check log or the wait ends.
@@ -230,6 +232,26 @@ What a run does, job by job:
 - **report**, on a real run with a checklist pull request that nobody cancelled, creates or updates the workflow's one comment there,
   marked `<!-- release-builders: <package> X.Y.Z -->`: the win-builder upload, and macbuilder's status with a link to its result page.
 - **preview**, on a dry run, shows that comment in the run's summary, with no permission.
+
+The file uploaded to win-builder is the checked tarball repacked with one change:
+the first 40 bits of the commit, ten hex digits, are appended to `Version:` in `DESCRIPTION` and to the file name
+as four components of 10 bits each.
+Commit `c4a875c47d…` turns `fakepkg_1.0.1.tar.gz` into `fakepkg_1.0.1.786.647.369.125.tar.gz`,
+and a four-component release such as 1.4.2.1 keeps its four in front.
+Each component lies between 0 and 1023, so `R CMD check --as-cran` reports neither "Version contains large components",
+which a component of 1234 or more triggers, nor "Version contains leading zeroes".
+The CRAN submission and macbuilder get the checked tarball unchanged.
+The builders' comment names the file uploaded.
+To find the commit from the version in win-builder's email, turn its last four components back into ten hex digits:
+
+```sh
+v=1.0.1.786.647.369.125
+IFS=. read -r -a c <<<"$v"; set -- "${c[@]: -4}"
+git rev-parse "$(printf '%010x' $(($1 << 30 | $2 << 20 | $3 << 10 | $4)))"
+```
+
+The longer version is also greater than the checked one,
+so win-builder no longer reports "Insufficient package version" for a version that equals CRAN's.
 
 A dry run uploads nothing and writes nothing: it verifies the tarball, and reports the URLs and fields a real run would send.
 The calling job grants `actions: read` and `contents: read` to find and download the artifact,

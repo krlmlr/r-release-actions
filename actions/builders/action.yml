@@ -1,6 +1,7 @@
 name: "Builder uploads"
 description: >
-  Uploads a source tarball to win-builder by anonymous FTP, as devtools::check_win_devel() does (`builder: winbuilder`),
+  Uploads a source tarball to win-builder by anonymous FTP, as devtools::check_win_devel() does,
+  repacked with the commit encoded in its version (`builder: winbuilder`),
   or to macbuilder, as devtools::check_mac_devel() does for `r-devel` and check_mac_release() for `r-release`,
   and waits for its result (`builder: macbuilder`),
   or, on a dry run, reports what it would send,
@@ -14,6 +15,9 @@ inputs:
   tarball:
     description: "The tarball to upload, named `<package>_<version>.tar.gz`"
     required: true
+  commit:
+    description: "`winbuilder`: the full SHA of the commit the tarball was built from, encoded into the uploaded file's version"
+    default: ""
   flavors:
     description: >-
       `winbuilder`: `R-devel`, the only flavor it checks on;
@@ -30,6 +34,9 @@ outputs:
   results:
     description: "`winbuilder`: `R-devel=<uploaded|failed|dry-run>`"
     value: ${{ steps.winbuilder.outputs.results }}
+  tarball:
+    description: "`winbuilder`: the name of the file uploaded, `<package>_<version>.<four components of the commit>.tar.gz`"
+    value: ${{ steps.winbuilder.outputs.tarball }}
   url:
     description: "`macbuilder`: the result page"
     value: ${{ steps.macbuilder.outputs.url }}
@@ -47,13 +54,14 @@ runs:
       if: inputs.builder == 'winbuilder'
       env:
         TARBALL: ${{ inputs.tarball }}
+        COMMIT: ${{ inputs.commit }}
         FLAVORS: ${{ inputs.flavors }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
         if [ "$DRY_RUN" = true ]; then
-          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --dry-run "$TARBALL" "$FLAVORS"
+          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --dry-run --commit "$COMMIT" "$TARBALL" "$FLAVORS"
         else
-          "$GITHUB_ACTION_PATH/builders.sh" winbuilder "$TARBALL" "$FLAVORS"
+          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --commit "$COMMIT" "$TARBALL" "$FLAVORS"
         fi
       shell: bash
 

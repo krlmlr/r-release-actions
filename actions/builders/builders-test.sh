@@ -3,8 +3,10 @@
 # Check builders.sh offline, against a fake win-builder FTP server and a fake macbuilder on 127.0.0.1:
 # nothing reaches either service.
 #
-#   1. `winbuilder` uploads the tarball's own bytes by anonymous FTP to `R-devel/<file name>`, fails loudly when that fails,
-#      and outputs the result; any other flavor fails before sending.
+#   1. `winbuilder` uploads the tarball by anonymous FTP to `R-devel/<file name>`, repacked with the commit's first 40 bits
+#      appended to its version as four components of 10 bits each, and otherwise unchanged;
+#      it fails loudly when the upload fails, and outputs the result and the uploaded file's name;
+#      any other flavor, and a missing or short commit, fail before sending.
 #   2. `macbuilder` posts `pkgfile` and `rflavor` with `Accept: application/json`, and outputs the result page's URL;
 #      a 502 or another refusal, an answer without a result URL or that is no JSON,
 #      and a URL on another host, with another scheme or with user info fail.
@@ -34,7 +36,7 @@ CLEANUP+=('[ -z "$FTP_PID" ] || kill "$FTP_PID" 2>/dev/null' '[ -z "$HTTP_PID" ]
 # Its directories are R-devel, R-release and R-oldrelease; the file `ftp-mode` set to `denied` refuses every STOR,
 # and set to `stall` answers a STOR only after five seconds.
 # Every STOR is recorded in `ftp-requests` as `STOR-begin /<dir>/<name>`,
-# and every stored file as `STOR /<dir>/<name> sha256=<digest>`.
+# and every stored file as `STOR /<dir>/<name> sha256=<digest>`, its bytes kept as `stored/<dir>/<name>`.
 
 cat >"$SCRATCH/ftp.py" <<'EOF'
 import hashlib, os, socket, socketserver, sys, time
@@ -97,11 +99,14 @@ class Session(socketserver.StreamRequestHandler):
                 self.send("150 ok to send")
                 conn, _ = data.accept()
                 h = hashlib.sha256()
-                while True:
-                    chunk = conn.recv(65536)
-                    if not chunk:
-                        break
-                    h.update(chunk)
+                os.makedirs(os.path.join(scratch, "stored", cwd.strip("/")), exist_ok=True)
+                with open(os.path.join(scratch, "stored", cwd.strip("/"), os.path.basename(arg)), "wb") as out:
+                    while True:
+                        chunk = conn.recv(65536)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+                        out.write(chunk)
                 conn.close()
                 data.close()
                 record("STOR %s/%s sha256=%s" % (cwd, arg, h.hexdigest()))
@@ -280,72 +285,130 @@ run() {
   : >"$SCRATCH/output"
   : >"$SCRATCH/ftp-requests"
   : >"$SCRATCH/http-requests"
+  rm -rf "$SCRATCH/stored"
   out=$(GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY=$SUMMARY GITHUB_OUTPUT=$SCRATCH/output \
     "$HERE/builders.sh" "$@" 2>&1) || rc=$?
   printf '%s\nexit %s\n' "$out" "$rc"
 }
 field() { sed -n "s/^field $1=//p" "$SCRATCH/http-requests"; }
 
-mkdir -p "$SCRATCH/pkg/fakepkg"
-printf 'Package: fakepkg\nVersion: 1.0.1\nMaintainer: Jane Doe <jane@example.org>\n' >"$SCRATCH/pkg/fakepkg/DESCRIPTION"
+mkdir -p "$SCRATCH/pkg/fakepkg/R"
+printf 'Package: fakepkg\nVersion: 1.0.1\nMaintainer: Jane Doe <jane@example.org>\nVersioned: Version: 1.0.1\n' \
+  >"$SCRATCH/pkg/fakepkg/DESCRIPTION"
+echo 'f <- function() 1' >"$SCRATCH/pkg/fakepkg/R/f.R"
 TARBALL=$SCRATCH/pkg/fakepkg_1.0.1.tar.gz
 tar -czf "$TARBALL" -C "$SCRATCH/pkg" fakepkg
 SHA=$(sha256sum "$TARBALL" | cut -d' ' -f1)
+# The commit the tarball was built from, and its first 40 bits, c4a875c47d, as four components of 10 bits each:
+# 0xc4a875c47d is 786 * 2^30 + 647 * 2^20 + 369 * 2^10 + 125.
+COMMIT=c4a875c47d9c90ab66f647daaba6543598c1234e
+UPLOADED=fakepkg_1.0.1.786.647.369.125.tar.gz
+# The README's decoding, from the version in win-builder's email back to the commit's first ten hex digits.
+decode() { local c; IFS=. read -r -a c <<<"$1"; set -- "${c[@]: -4}"; printf '%010x' $(($1 << 30 | $2 << 20 | $3 << 10 | $4)); }
+# A version that R CMD check's incoming checks accept: no component of 1234 or more, none with a leading zero.
+incoming_ok() {
+  local c x
+  IFS=. read -r -a c <<<"$1"
+  for x in "${c[@]}"; do [[ $x =~ ^(0|[1-9][0-9]*)$ ]] && [ "$x" -lt 1234 ] || return 1; done
+}
 
 section "winbuilder uploads by anonymous FTP, as devtools' submit_winbuilder_ftp() does"
-out=$(run winbuilder "$TARBALL" R-devel)
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
 has "it succeeds" "$out" "exit 0"
-is "one STOR, into R-devel's directory, of the tarball's bytes" "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests")" \
-  "STOR /R-devel/fakepkg_1.0.1.tar.gz sha256=$SHA"
-is "the result" "$(cat "$SCRATCH/output")" "results=R-devel=uploaded"
-has "the summary names the URL" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FTP/R-devel/fakepkg_1.0.1.tar.gz"
+is "one STOR, into R-devel's directory, of the tarball with the commit in its version" \
+  "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests" | sed 's/ sha256=.*//')" "STOR /R-devel/$UPLOADED"
+is "the result and the uploaded file's name" "$(cat "$SCRATCH/output")" "tarball=$UPLOADED
+results=R-devel=uploaded"
+has "the summary names the URL" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FTP/R-devel/$UPLOADED"
+has "and both files" "$(cat "$SUMMARY")" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, sha256 \`$SHA\`
+- Uploaded as \`$UPLOADED\`, sha256 \`$(sha256sum "$SCRATCH/stored/R-devel/$UPLOADED" | cut -d' ' -f1)\`: the same files, with commit \`c4a875c47d\` encoded in \`Version:\`"
 has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results to Jane Doe <jane@example.org>"
 has "with a notice" "$out" "::notice title=Uploaded to win-builder::"
 
+section "winbuilder repacks the tarball with the commit in its version"
+mkdir -p "$SCRATCH/x/checked" "$SCRATCH/x/uploaded"
+tar -xzf "$TARBALL" -C "$SCRATCH/x/checked"
+tar -xzf "$SCRATCH/stored/R-devel/$UPLOADED" -C "$SCRATCH/x/uploaded"
+is "the same files" "$(tar -tzf "$SCRATCH/stored/R-devel/$UPLOADED" | sort)" "$(tar -tzf "$TARBALL" | sort)"
+is "the same contents but DESCRIPTION" "$(diff -r -x DESCRIPTION "$SCRATCH/x/checked" "$SCRATCH/x/uploaded" && echo same)" same
+is "DESCRIPTION differs in the Version field only" \
+  "$(diff "$SCRATCH/x/checked/fakepkg/DESCRIPTION" "$SCRATCH/x/uploaded/fakepkg/DESCRIPTION")" "2c2
+< Version: 1.0.1
+---
+> Version: 1.0.1.786.647.369.125"
+is "the README's decoding gives back the commit's first ten hex digits" "$(decode 1.0.1.786.647.369.125)" "${COMMIT:0:10}"
+for c in 0000000000 ffffffffff 00a01b2c3d 0123456789; do
+  sha=${c}$(printf '0%.0s' $(seq 30))
+  out=$(run winbuilder --dry-run --commit "$sha" "$TARBALL" R-devel)
+  v=$(sed -n 's/^tarball=fakepkg_\(.*\)\.tar\.gz$/\1/p' "$SCRATCH/output")
+  is "commit $c: four components, each below 1234 without a leading zero, decoded back" \
+    "$(incoming_ok "$v" && [[ $v =~ ^1\.0\.1(\.[0-9]+){4}$ ]] && decode "$v")" "$c"
+done
+is "zero bits are zero components" "$(run winbuilder --dry-run --commit "$(printf '0%.0s' $(seq 40))" "$TARBALL" R-devel >/dev/null; head -n 1 "$SCRATCH/output")" \
+  "tarball=fakepkg_1.0.1.0.0.0.0.tar.gz"
+is "all one bits are 1023" "$(run winbuilder --dry-run --commit "$(printf 'f%.0s' $(seq 40))" "$TARBALL" R-devel >/dev/null; head -n 1 "$SCRATCH/output")" \
+  "tarball=fakepkg_1.0.1.1023.1023.1023.1023.tar.gz"
+mkdir -p "$SCRATCH/pkg4/fakepkg"
+printf 'Package: fakepkg\nVersion: 1.4.2.1\nMaintainer: Jane Doe <jane@example.org>\n' >"$SCRATCH/pkg4/fakepkg/DESCRIPTION"
+tar -czf "$SCRATCH/pkg4/fakepkg_1.4.2.1.tar.gz" -C "$SCRATCH/pkg4" fakepkg
+out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkg4/fakepkg_1.4.2.1.tar.gz" R-devel)
+is "a four-component release keeps its four" "$(grep -v '^STOR-begin' "$SCRATCH/ftp-requests" | sed 's/ sha256=.*//')" \
+  "STOR /R-devel/fakepkg_1.4.2.1.786.647.369.125.tar.gz"
+is "in DESCRIPTION too" "$(tar -xzOf "$SCRATCH/stored/R-devel/fakepkg_1.4.2.1.786.647.369.125.tar.gz" fakepkg/DESCRIPTION | sed -n 2p)" \
+  "Version: 1.4.2.1.786.647.369.125"
+out=$(run winbuilder "$TARBALL" R-devel)
+has "no commit fails, saying so" "$out" "::error title=No commit SHA::The commit is '', not a full 40-character commit SHA."
+is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
+out=$(run winbuilder --commit "${COMMIT:0:10}" "$TARBALL" R-devel)
+has "a short commit fails" "$out" "::error title=No commit SHA::"
+out=$(run winbuilder "$TARBALL" R-devel --commit)
+has "a --commit without its value is a usage error" "$out" "exit 2"
+
 section "winbuilder failures"
 echo denied >"$SCRATCH/ftp-mode"
-out=$(run winbuilder "$TARBALL" R-devel)
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
 has "a refused upload fails" "$out" "exit 1"
 has "loudly, naming the URL" "$out" "::error title=The upload to win-builder failed::curl exited with status"
-is "and outputs the result" "$(cat "$SCRATCH/output")" "results=R-devel=failed"
+is "and outputs the result" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed"
 echo ok >"$SCRATCH/ftp-mode"
 for f in R-release R-oldrelease R-patched; do
-  out=$(run winbuilder "$TARBALL" "$f")
+  out=$(run winbuilder --commit "$COMMIT" "$TARBALL" "$f")
   has "$f fails: win-builder checks on R-devel only" "$out" "::error title=No win-builder flavor::\`$f\` is not \`R-devel\`"
   is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
 done
-out=$(run winbuilder "$TARBALL" R-devel R-release)
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-release)
 has "a second flavor is a usage error" "$out" "exit 2"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
-out=$(WINBUILDER_URL=ftp://127.0.0.1:1 run winbuilder "$TARBALL" R-devel)
+out=$(WINBUILDER_URL=ftp://127.0.0.1:1 run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
 has "an unreachable server fails" "$out" "exit 1"
 has "after two retries of the connection" "$out" "  attempt 2: curl exited with status 7, no connection"
 hasnt "and no third" "$out" "  attempt 3:"
 has "naming curl's status" "$out" "::error title=The upload to win-builder failed::curl exited with status 7"
 echo stall >"$SCRATCH/ftp-mode"
-out=$(WINBUILDER_MAX_TIME=2 run winbuilder "$TARBALL" R-devel)
+out=$(WINBUILDER_MAX_TIME=2 run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
 has "a timed-out upload fails" "$out" "curl exited with status 28"
 is "without a retry, which could send part of the file again" "$(grep -c '^STOR-begin' "$SCRATCH/ftp-requests")" 1
 echo ok >"$SCRATCH/ftp-mode"
-out=$(run winbuilder "$TARBALL")
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL")
 has "no flavor fails, saying so" "$out" "::error title=No win-builder flavor::No flavor was given"
 cp "$TARBALL" "$SCRATCH/pkg/fakepkg.tar.gz"
-out=$(run winbuilder "$SCRATCH/pkg/fakepkg.tar.gz" R-devel)
+out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkg/fakepkg.tar.gz" R-devel)
 has "a misnamed tarball fails" "$out" "::error title=The tarball is misnamed::"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 printf 'not a tarball' >"$SCRATCH/pkg/fakepkg_9.9.tar.gz"
-out=$(run winbuilder "$SCRATCH/pkg/fakepkg_9.9.tar.gz" R-devel)
+out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkg/fakepkg_9.9.tar.gz" R-devel)
 has "a file that is no tarball fails" "$out" "::error title=The tarball cannot be read::"
 cp "$TARBALL" "$SCRATCH/pkg/fakepkg_1.0.2.tar.gz"
-out=$(run winbuilder "$SCRATCH/pkg/fakepkg_1.0.2.tar.gz" R-devel)
+out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkg/fakepkg_1.0.2.tar.gz" R-devel)
 has "a tarball of another release fails" "$out" "::error title=The tarball is of another release::"
 
 section "winbuilder dry run"
-out=$(run winbuilder --dry-run "$TARBALL" R-devel)
+out=$(run winbuilder --dry-run --commit "$COMMIT" "$TARBALL" R-devel)
 has "it succeeds" "$out" "exit 0"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
-has "it says what it would upload, and where" "$(cat "$SUMMARY")" "- R-devel: would upload to $FTP/R-devel/fakepkg_1.0.1.tar.gz"
-is "the result says so" "$(cat "$SCRATCH/output")" "results=R-devel=dry-run"
+has "it says what it would upload, and where" "$(cat "$SUMMARY")" "- R-devel: would upload to $FTP/R-devel/$UPLOADED"
+is "the result says so, with the file's name" "$(cat "$SCRATCH/output")" "tarball=$UPLOADED
+results=R-devel=dry-run"
 has "with a notice" "$out" "::notice title=Dry run::Nothing was sent to win-builder."
 
 section "macbuilder posts as devtools' check_mac() does"
