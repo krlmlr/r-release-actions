@@ -60,7 +60,7 @@ usage() {
 
 work=$(mktemp -d)
 # A repacked tarball may hold read-only directories.
-trap 'chmod -R u+w "$work" || true; rm -rf "$work"' EXIT
+trap 'chmod -R u+rwX "$work" || true; rm -rf "$work"' EXIT
 
 # Sets pkg, version, maint, base and sha from a tarball named `<package>_<version>.tar.gz`
 # whose DESCRIPTION holds that package and version, or fails.
@@ -107,7 +107,7 @@ repack() { # <tarball> <version> <stage>
     fail "$stage" "The tarball cannot be repacked" "\`$base\` cannot be listed." "$work/tar.err" -- \
       "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
   fi
-  awk -v p="$pkg/" 'index($0, p) != 1' "$work/members" | head -n 20 >"$work/outside"
+  awk -v p="$pkg/" 'index($0, p) != 1 { print; if (++n == 20) exit }' "$work/members" >"$work/outside"
   if [ -s "$work/outside" ]; then
     fail "$stage" "The tarball cannot be repacked" "\`$base\` holds files outside \`$pkg/\`, which the repack would lose." "$work/outside" -- \
       "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
@@ -118,14 +118,14 @@ repack() { # <tarball> <version> <stage>
   fi
   # Only the first `Version:` line changes, and keeps a carriage return it ends in.
   # DESCRIPTION is written in place, so that its directory keeps its time, and keeps its own mode and time.
-  local desc=$dir/src/$pkg/DESCRIPTION mode
-  { mode=$(stat -c %a "$desc") &&
-    awk -v v="$version" '!done && /^Version:/ { print "Version: " v ($0 ~ /\r$/ ? "\r" : ""); done = 1; next } { print }' \
+  local desc=$dir/src/$pkg/DESCRIPTION ro=''
+  [ -w "$desc" ] || ro=1
+  { awk -v v="$version" '!done && /^Version:/ { print "Version: " v ($0 ~ /\r$/ ? "\r" : ""); done = 1; next } { print }' \
       "$desc" >"$dir/DESCRIPTION" &&
     touch -r "$desc" "$dir/DESCRIPTION" &&
-    chmod u+w "$desc" &&
+    { [ -z "$ro" ] || chmod u+w "$desc"; } &&
     cat "$dir/DESCRIPTION" >"$desc" &&
-    chmod "$mode" "$desc" &&
+    { [ -z "$ro" ] || chmod u-w "$desc"; } &&
     touch -r "$dir/DESCRIPTION" "$desc"; } 2>"$work/tar.err" ||
     fail "$stage" "The tarball cannot be repacked" "\`$base\`'s DESCRIPTION cannot be rewritten." "$work/tar.err" -- \
       "Compare the tarball's file modes with what \`R CMD build\` writes."

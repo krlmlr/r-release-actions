@@ -296,6 +296,9 @@ mkdir -p "$SCRATCH/pkg/fakepkg/R"
 printf 'Package: fakepkg\nVersion: 1.0.1\nMaintainer: Jane Doe <jane@example.org>\nVersioned: Version: 1.0.1\n' \
   >"$SCRATCH/pkg/fakepkg/DESCRIPTION"
 echo 'f <- function() 1' >"$SCRATCH/pkg/fakepkg/R/f.R"
+chmod 644 "$SCRATCH/pkg/fakepkg/DESCRIPTION"
+# A mode the usual umask would change, so that the repack must keep it.
+chmod 664 "$SCRATCH/pkg/fakepkg/R/f.R"
 printf '#!/bin/sh\n' >"$SCRATCH/pkg/fakepkg/configure"
 chmod 755 "$SCRATCH/pkg/fakepkg/configure"
 touch -d '2026-01-02 03:04:05' "$SCRATCH/pkg/fakepkg" "$SCRATCH/pkg/fakepkg"/* "$SCRATCH/pkg/fakepkg/R"/*
@@ -332,13 +335,14 @@ section "winbuilder repacks the tarball with the commit in its version"
 mkdir -p "$SCRATCH/x/checked" "$SCRATCH/x/uploaded"
 tar -xzf "$TARBALL" -C "$SCRATCH/x/checked"
 tar -xzf "$SCRATCH/stored/R-devel/$UPLOADED" -C "$SCRATCH/x/uploaded"
-# Mode, size, date, time and name of each member, the directory's own entry aside, which an archive need not hold.
-listing() { tar -tvzf "$1" | awk '$6 != "fakepkg/" { print $1, $3, $4, $5, $6 }' | sort; }
+# Mode, size, date, time to the second and name of each member.
+listing() { tar --full-time -tvzf "$1" | awk '{ print $1, $3, $4, $5, $6 }' | sort; }
 is "the same files, modes, sizes and times but DESCRIPTION's size" \
   "$(listing "$SCRATCH/stored/R-devel/$UPLOADED" | grep -v DESCRIPTION)" "$(listing "$TARBALL" | grep -v DESCRIPTION)"
-is "which are there" "$(listing "$TARBALL" | grep -c ' 2026-01-02 03:04 ')" 4
+is "which are there, the package's directory with its time" "$(listing "$TARBALL" | grep -c ' 2026-01-02 03:04:05 ')" 5
 is "and DESCRIPTION keeps its mode and time" "$(listing "$SCRATCH/stored/R-devel/$UPLOADED" | grep DESCRIPTION | cut -d' ' -f1,3,4)" \
-  "-rw-r--r-- 2026-01-02 03:04"
+  "-rw-r--r-- 2026-01-02 03:04:05"
+is "as a file the usual umask would change does" "$(listing "$SCRATCH/stored/R-devel/$UPLOADED" | awk '/f.R$/ { print $1 }')" "-rw-rw-r--"
 is "an executable stays executable" "$(tar -tvzf "$SCRATCH/stored/R-devel/$UPLOADED" | awk '/configure$/ { print $1 }')" "-rwxr-xr-x"
 is "the same contents but DESCRIPTION" "$(diff -r -x DESCRIPTION "$SCRATCH/x/checked" "$SCRATCH/x/uploaded" && echo same)" same
 is "DESCRIPTION differs in the Version field only" \
