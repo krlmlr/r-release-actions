@@ -238,7 +238,7 @@ cmd_winbuilder() {
     notice "Dry run" "Nothing was sent to win-builder. A real run uploads $uploaded for ${flavors[*]}."
     return 0
   fi
-  summary "" "Win-builder emails the results to $maint, usually within 30 minutes." ""
+  [[ " $results" != *=uploaded\ * ]] || summary "" "Win-builder emails the results to $maint, usually within 30 minutes." ""
   [ -z "$failed" ] || exit 1
   notice "Uploaded to win-builder" "$uploaded for ${flavors[*]}; the results arrive by email to the maintainer."
 }

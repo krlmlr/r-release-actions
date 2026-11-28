@@ -34,6 +34,7 @@ CLEANUP+=('[ -z "$FTP_PID" ] || kill "$FTP_PID" 2>/dev/null' '[ -z "$HTTP_PID" ]
 #
 # Enough of RFC 959 and RFC 2428 for curl's upload: USER, PASS, PWD, CWD, EPSV, PASV, TYPE, STOR, QUIT.
 # Its directories are R-devel, R-release and R-oldrelease; the file `ftp-mode` set to `denied` refuses every STOR,
+# set to `denied-devel` refuses a STOR into R-devel only,
 # and set to `stall` answers a STOR only after five seconds.
 # Every STOR is recorded in `ftp-requests` as `STOR-begin /<dir>/<name>`,
 # and every stored file as `STOR /<dir>/<name> sha256=<digest>`, its bytes kept as `stored/<dir>/<name>`.
@@ -91,7 +92,7 @@ class Session(socketserver.StreamRequestHandler):
                 self.send("200 type set")
             elif cmd == "STOR":
                 record("STOR-begin %s/%s" % (cwd, arg))
-                if mode() == "denied":
+                if mode() == "denied" or mode() == "denied-devel" and cwd == "/R-devel":
                     self.send("553 permission denied")
                     continue
                 if mode() == "stall":
@@ -407,8 +408,14 @@ echo denied >"$SCRATCH/ftp-mode"
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-release)
 has "a refused upload fails" "$out" "exit 1"
 has "loudly, naming the URL" "$out" "::error title=The upload to win-builder failed::curl exited with status"
-has "for every flavor tried" "$(grep -c 'The upload to win-builder failed' <<<"$out")" 2
+is "for every flavor tried" "$(grep -c 'The upload to win-builder failed' <<<"$out")" 2
 is "and outputs the results" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed R-release=failed"
+hasnt "without promising an email" "$(cat "$SUMMARY")" "Win-builder emails the results"
+echo denied-devel >"$SCRATCH/ftp-mode"
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-release)
+has "a failed queue does not stop the next" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed R-release=uploaded"
+has "and still fails the stage" "$out" "exit 1"
+has "promising the email of the queue that got the file" "$(cat "$SUMMARY")" "Win-builder emails the results"
 echo ok >"$SCRATCH/ftp-mode"
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-patched)
 has "an unknown flavor fails" "$out" "::error title=No win-builder flavor::\`R-patched\` is none of"

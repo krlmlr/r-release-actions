@@ -41,7 +41,7 @@ on:
         default: ""
       # Callers use R-devel as a rule, and the other queues only on purpose.
       queues:
-        description: "The win-builder queues to upload to, separated by spaces: `R-devel` as a rule, `R-release` or `R-oldrelease` only on purpose"
+        description: "The win-builder queues to upload to, separated by spaces: `R-devel` as a rule, `R-release` or `R-oldrelease` only on purpose; empty is `R-devel`"
         required: false
         type: string
         default: R-devel
@@ -72,15 +72,28 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       pr: ${{ steps.checklist.outputs.pr }}
     steps:
-      - name: Refuse a SHA that is not one
+      # A queue win-builder does not have fails here, before macbuilder uploads anything.
+      - name: Refuse a SHA that is not one, and an unknown win-builder queue
         env:
           SHA: ${{ inputs.sha }}
           DRY_RUN: ${{ inputs.dry-run }}
+          QUEUES: ${{ inputs.queues || 'R-devel' }}
         run: |
           if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error title=No full commit SHA::The input sha is '$SHA', not a full 40-character commit SHA."
             exit 1
           fi
+          read -r -d '' -a queues <<<"$QUEUES" || true
+          for q in "${queues[@]}"; do
+            case "$q" in
+              R-devel | R-release | R-oldrelease) ;;
+              *)
+                echo "::error title=Unknown win-builder queue::The input queues, printed in this step's log, names a queue other than R-devel, R-release and R-oldrelease."
+                printf 'queues: %q\n' "$QUEUES"
+                exit 1
+                ;;
+            esac
+          done
           if [ "$DRY_RUN" = true ]; then
             echo "::notice title=Dry run::Nothing is uploaded or commented in this run."
             printf '> [!NOTE]\n> **Dry run:** nothing is uploaded or commented.\n\n' >> "$GITHUB_STEP_SUMMARY"
@@ -169,7 +182,7 @@ jobs:
           builder: winbuilder
           tarball: ${{ steps.tarball.outputs.tarball }}
           commit: ${{ inputs.sha }}
-          flavors: ${{ inputs.queues }}
+          flavors: ${{ inputs.queues || 'R-devel' }}
           dry-run: ${{ inputs.dry-run }}
 
   macbuilder:

@@ -1,6 +1,6 @@
 name: "Builder uploads"
 description: >
-  Uploads a source tarball to win-builder by anonymous FTP, as devtools::check_win_devel() does,
+  Uploads a source tarball to win-builder by anonymous FTP, to each flavor in `flavors`, as devtools::check_win_devel() does for R-devel,
   repacked with the commit encoded in its version (`builder: winbuilder`),
   or to macbuilder, as devtools::check_mac_devel() does for `r-devel` and check_mac_release() for `r-release`,
   and waits for its result (`builder: macbuilder`),
@@ -20,7 +20,8 @@ inputs:
     default: ""
   flavors:
     description: >-
-      `winbuilder`: the flavors, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`;
+      `winbuilder`: the flavors, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`,
+      `R-devel` as a rule and the others only on purpose;
       `macbuilder`: one flavor, `r-devel` or `r-release`
     required: true
   timeout-minutes:
