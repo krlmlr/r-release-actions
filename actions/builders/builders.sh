@@ -239,7 +239,8 @@ cmd_winbuilder() {
     notice "Dry run" "Nothing was sent to win-builder. A real run uploads $uploaded for ${flavors[*]}."
     return 0
   fi
-  [ ${#sent[@]} -eq 0 ] || summary "" "Win-builder emails the results for ${sent[*]} to $maint, usually within 30 minutes." ""
+  local names="${sent[*]:-}"
+  [ ${#sent[@]} -eq 0 ] || summary "" "Win-builder emails the results for ${names// /, } to $maint, usually within 30 minutes." ""
   [ -z "$failed" ] || exit 1
   notice "Uploaded to win-builder" "$uploaded for ${flavors[*]}; the results arrive by email to the maintainer."
 }

@@ -333,7 +333,7 @@ has "the summary names the URLs" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FT
 - R-release: uploaded to $FTP/R-release/$UPLOADED"
 has "and both files" "$(cat "$SUMMARY")" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, sha256 \`$SHA\`
 - Uploaded as \`$UPLOADED\`, sha256 \`$(sha256sum "$SCRATCH/stored/R-devel/$UPLOADED" | cut -d' ' -f1)\`: the same files, with commit \`c4a875c47d\` encoded in \`Version:\`"
-has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results for R-devel R-release to Jane Doe <jane@example.org>"
+has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results for R-devel, R-release to Jane Doe <jane@example.org>"
 has "with a notice" "$out" "::notice title=Uploaded to win-builder::"
 
 section "winbuilder repacks the tarball with the commit in its version"
