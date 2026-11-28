@@ -115,7 +115,7 @@ upsert_comment() { # <pr> <marker> <body file> <what> <stands>
   say "$how $what on #$pr."
 }
 
-# The builder uploads' one comment on <pr>: win-builder's uploads, whose results arrive by email,
+# The builder uploads' one comment on <pr>: win-builder's R-devel upload, whose results arrive by email,
 # and macbuilder's check result, created or updated in place; DRY_RUN `true` prints it and writes nothing.
 cmd_builders() {
   [ $# -eq 3 ] || usage
@@ -144,15 +144,17 @@ cmd_builders() {
     wlines="- win-builder: no upload, job \`${wjob:-not run}\`"$'\n'
     [ "$wjob" = skipped ] || overall=failure
   else
-    # A job that ended otherwise than by its own verdict after the upload, such as a timeout, is named;
+    # A job that ended otherwise than by its own verdict, such as a timeout, is named;
     # a failed upload fails the job, and says so already.
+    local after=''
+    [[ " ${WINBUILDER_RESULTS:-} " != *=uploaded\ * ]] || after=" after the upload"
     case "$wjob" in
       success | skipped | '') ;;
       failure) [[ " ${WINBUILDER_RESULTS:-} " == *=failed\ * ]] || {
-        wlines+="- win-builder: job \`$wjob\` after the upload"$'\n'
+        wlines+="- win-builder: job \`$wjob\`$after"$'\n'
         overall=failure
       } ;;
-      *) wlines+="- win-builder: job \`$wjob\` after the upload"$'\n'; overall=failure ;;
+      *) wlines+="- win-builder: job \`$wjob\`$after"$'\n'; overall=failure ;;
     esac
   fi
   local murl=${MACBUILDER_URL:-} mstatus

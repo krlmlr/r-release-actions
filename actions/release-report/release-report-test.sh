@@ -205,7 +205,11 @@ has "naming the job" "$w" "- win-builder \`R-devel\`: uploaded; the results arri
 - win-builder: job \`cancelled\` after the upload"
 out=$(WINBUILDER_RESULTS='R-devel=failed' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
   MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
-hasnt "a job failed by a failed upload is not named again" "$(cat "$SCRATCH/writes")" "after the upload"
+hasnt "a job failed by a failed upload is not named again" "$(cat "$SCRATCH/writes")" "job \`failure\`"
+out=$(WINBUILDER_RESULTS='R-devel=failed' WINBUILDER_JOB=cancelled MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
+  MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
+has "a job cancelled after a failed upload is named without an upload" "$(cat "$SCRATCH/writes")" "- win-builder: job \`cancelled\`
+"
 out=$(WINBUILDER_RESULTS='R-devel=uploaded' WINBUILDER_JOB=failure MACBUILDER_OUTCOME=ok MACBUILDER_STATUS=OK \
   MACBUILDER_JOB=success run builders 7 fakepkg 1.0.1)
 w=$(cat "$SCRATCH/writes")

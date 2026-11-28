@@ -377,8 +377,13 @@ for f in R-release R-oldrelease R-patched; do
   is "before anything is sent" "$(cat "$SCRATCH/ftp-requests")" ""
 done
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-release)
-has "a second flavor is a usage error" "$out" "exit 2"
+has "a second flavor fails, naming both" "$out" "::error title=No win-builder flavor::\`R-devel R-release\` is not \`R-devel\`"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" "R-devel ")
+has "a flavor with a space is none" "$out" "::error title=No win-builder flavor::"
+out=$(run winbuilder --commit "$COMMIT" "$TARBALL" "")
+has "nor is an empty one" "$out" "::error title=No win-builder flavor::"
+is "and nothing is sent" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(WINBUILDER_URL=ftp://127.0.0.1:1 run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
 has "an unreachable server fails" "$out" "exit 1"
 has "after two retries of the connection" "$out" "  attempt 2: curl exited with status 7, no connection"

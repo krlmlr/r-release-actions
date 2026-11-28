@@ -38,7 +38,7 @@ on:
         required: false
         type: string
         default: ""
-      # Deprecated: kept so that a caller that still passes it keeps working, since a removed input fails the call.
+      # Deprecated: kept so that a caller that passes `R-devel` or nothing keeps working, since a removed input fails the call.
       queues:
         description: "Deprecated: win-builder checks on R-devel only; `R-devel` or empty, and any other value fails the run"
         required: false
@@ -81,9 +81,10 @@ jobs:
             echo "::error title=No full commit SHA::The input sha is '$SHA', not a full 40-character commit SHA."
             exit 1
           fi
-          read -r -a queues <<<"$QUEUES"
+          read -r -d '' -a queues <<<"$QUEUES" || true
           if [ ${#queues[@]} -gt 1 ] || [ "${queues[0]:-R-devel}" != R-devel ]; then
-            echo "::error title=Win-builder checks on R-devel only::The input queues is '$QUEUES'. Win-builder checks on R-devel only, as macbuilder does, and queues is deprecated: drop it from the calling workflow, or pass R-devel."
+            echo "::error title=Win-builder checks on R-devel only::The input queues is not R-devel. Win-builder checks on R-devel only, as macbuilder does, and queues is deprecated: drop it from the calling workflow, or pass R-devel."
+            printf 'queues: %q\n' "$QUEUES"
             exit 1
           fi
           if [ "$DRY_RUN" = true ]; then

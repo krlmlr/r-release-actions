@@ -204,8 +204,8 @@ jobs:
 Inputs:
 
 - `sha`, `dry-run`, `check-workflow` and `check-run-id`: as for the CRAN submission.
-- `queues`: deprecated, and kept only so that a caller that still passes it keeps working.
-  Win-builder checks on R-devel only: `R-devel` and an empty value are accepted, and any other value fails the run in the **version** job.
+- `queues`: deprecated, and kept only so that a caller that passes it as `R-devel` or empty keeps working.
+  Win-builder checks on R-devel only, and any other value fails the run in the **version** job, before any upload.
 - `macbuilder-timeout-minutes`: how long to wait for macbuilder's result, by default 60 and at most 150.
 
 What a run does, job by job:

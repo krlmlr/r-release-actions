@@ -3,7 +3,7 @@
 # Upload a source tarball to win-builder and to macbuilder, and wait for macbuilder's result.
 # These checks inform the release and never gate it: a check result is reported, never turned into a failure.
 #
-#   winbuilder [--dry-run] --commit <sha> <tarball> <flavor>
+#   winbuilder [--dry-run] --commit <sha> <tarball> <flavor>...
 #     Upload the tarball by anonymous FTP to `<WINBUILDER_URL>/<flavor>/<file name>`, where the flavor is `R-devel`,
 #     the only one used, as `devtools:::submit_winbuilder_ftp()` and `upload_ftp()` do for `check_win_devel()`
 #     (devtools 2.5.2, R/check-win.R). Win-builder emails the results to the maintainer named in the tarball.
@@ -12,7 +12,7 @@
 #     as four components of 10 bits each: commit c4a875c47d... turns 1.0.1 into 1.0.1.786.647.369.125.
 #     No component reaches 1234 or has a leading zero, so `R CMD check --as-cran` adds no NOTE for the version;
 #     the README shows how to turn the four components back into the commit.
-#     A failed connection is retried twice; a failed upload fails the stage.
+#     Any flavor but a single `R-devel` fails before sending. A failed connection is retried twice; a failed upload fails the stage.
 #     Writes `results`, `<flavor>=<uploaded|failed|dry-run>`, and `tarball`, the uploaded file's name, to GITHUB_OUTPUT.
 #   macbuilder [--dry-run] <tarball> <flavor>
 #     Post the tarball to MACBUILDER_URL as `devtools:::check_mac()` does (devtools 2.5.2, R/check-mac.R),
@@ -119,25 +119,24 @@ repack() { # <tarball> <version> <stage>
 }
 
 cmd_winbuilder() {
-  local dry_run='' commit='' tarball='' flavor='' given=''
+  local dry_run='' commit='' tarball='' flavors=() flavor
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) dry_run=1 ;;
       --commit) [ $# -ge 2 ] || usage; commit=$2; shift ;;
       -*) usage ;;
-      *)
-        if [ -z "$tarball" ]; then tarball=$1; elif [ -z "$given" ]; then flavor=$1 given=1; else usage; fi
-        ;;
+      *) if [ -z "$tarball" ]; then tarball=$1; else flavors+=("$1"); fi ;;
     esac
     shift
   done
   [ -n "$tarball" ] || usage
-  [ -n "$flavor" ] ||
+  [ ${#flavors[@]} -gt 0 ] ||
     fail "Win-builder" "No win-builder flavor" "No flavor was given." -- \
       "Pass \`R-devel\` in the action's \`flavors\` input."
-  [ "$flavor" = R-devel ] ||
-    fail "Win-builder" "No win-builder flavor" "\`$flavor\` is not \`R-devel\`, the only flavor win-builder checks on here." -- \
-      "Pass \`R-devel\`, as win-builder's upload directory names it."
+  { [ ${#flavors[@]} -eq 1 ] && [ "${flavors[0]}" = R-devel ]; } ||
+    fail "Win-builder" "No win-builder flavor" "\`${flavors[*]}\` is not \`R-devel\`, the only flavor win-builder checks on here." -- \
+      "Pass \`R-devel\` alone, as win-builder's upload directory names it."
+  flavor=R-devel
   valid_sha "$commit" ||
     fail "Win-builder" "No commit SHA" "The commit is '$commit', not a full 40-character commit SHA." -- \
       "Pass the commit the tarball was built from in the action's \`commit\` input."

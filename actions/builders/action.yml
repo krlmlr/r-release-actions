@@ -58,10 +58,11 @@ runs:
         FLAVORS: ${{ inputs.flavors }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
+        read -r -d '' -a flavors <<<"$FLAVORS" || true
         if [ "$DRY_RUN" = true ]; then
-          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --dry-run --commit "$COMMIT" "$TARBALL" "$FLAVORS"
+          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --dry-run --commit "$COMMIT" "$TARBALL" "${flavors[@]}"
         else
-          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --commit "$COMMIT" "$TARBALL" "$FLAVORS"
+          "$GITHUB_ACTION_PATH/builders.sh" winbuilder --commit "$COMMIT" "$TARBALL" "${flavors[@]}"
         fi
       shell: bash
 
