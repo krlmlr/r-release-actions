@@ -333,7 +333,7 @@ has "the summary names the URLs" "$(cat "$SUMMARY")" "- R-devel: uploaded to $FT
 - R-release: uploaded to $FTP/R-release/$UPLOADED"
 has "and both files" "$(cat "$SUMMARY")" "- Tarball: \`fakepkg_1.0.1.tar.gz\`, sha256 \`$SHA\`
 - Uploaded as \`$UPLOADED\`, sha256 \`$(sha256sum "$SCRATCH/stored/R-devel/$UPLOADED" | cut -d' ' -f1)\`: the same files, with commit \`c4a875c47d\` encoded in \`Version:\`"
-has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results to Jane Doe <jane@example.org>"
+has "and where the results go" "$(cat "$SUMMARY")" "Win-builder emails the results for R-devel R-release to Jane Doe <jane@example.org>"
 has "with a notice" "$out" "::notice title=Uploaded to win-builder::"
 
 section "winbuilder repacks the tarball with the commit in its version"
@@ -413,9 +413,10 @@ is "and outputs the results" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=f
 hasnt "without promising an email" "$(cat "$SUMMARY")" "Win-builder emails the results"
 echo denied-devel >"$SCRATCH/ftp-mode"
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-release)
-has "a failed queue does not stop the next" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed R-release=uploaded"
-has "and still fails the stage" "$out" "exit 1"
-has "promising the email of the queue that got the file" "$(cat "$SUMMARY")" "Win-builder emails the results"
+is "a failed queue does not stop the next" "$(tail -n 1 "$SCRATCH/output")" "results=R-devel=failed R-release=uploaded"
+is "which got the file" "$(grep '^STOR ' "$SCRATCH/ftp-requests" | sed 's/ sha256=.*//')" "STOR /R-release/$UPLOADED"
+is "and still fails the stage" "$(tail -n 1 <<<"$out")" "exit 1"
+has "promising the email of that queue only" "$(cat "$SUMMARY")" "Win-builder emails the results for R-release to Jane Doe"
 echo ok >"$SCRATCH/ftp-mode"
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" R-devel R-patched)
 has "an unknown flavor fails" "$out" "::error title=No win-builder flavor::\`R-patched\` is none of"

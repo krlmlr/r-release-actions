@@ -41,7 +41,7 @@ on:
         default: ""
       # Callers use R-devel as a rule, and the other queues only on purpose.
       queues:
-        description: "The win-builder queues to upload to, separated by spaces: `R-devel` as a rule, `R-release` or `R-oldrelease` only on purpose; empty is `R-devel`"
+        description: "The win-builder queues to upload to, separated by spaces: `R-devel` as a rule, `R-release` or `R-oldrelease` only on purpose; empty or blank is `R-devel`"
         required: false
         type: string
         default: R-devel
@@ -71,19 +71,23 @@ jobs:
       package: ${{ steps.version.outputs.package }}
       version: ${{ steps.version.outputs.version }}
       pr: ${{ steps.checklist.outputs.pr }}
+      queues: ${{ steps.check.outputs.queues }}
     steps:
-      # A queue win-builder does not have fails here, before macbuilder uploads anything.
+      # A queue win-builder does not have fails here, before macbuilder uploads anything;
+      # `queues` is the list the winbuilder job uploads to, `R-devel` for an empty or blank input.
       - name: Refuse a SHA that is not one, and an unknown win-builder queue
+        id: check
         env:
           SHA: ${{ inputs.sha }}
           DRY_RUN: ${{ inputs.dry-run }}
-          QUEUES: ${{ inputs.queues || 'R-devel' }}
+          QUEUES: ${{ inputs.queues }}
         run: |
           if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error title=No full commit SHA::The input sha is '$SHA', not a full 40-character commit SHA."
             exit 1
           fi
           read -r -d '' -a queues <<<"$QUEUES" || true
+          [ ${#queues[@]} -gt 0 ] || queues=(R-devel)
           for q in "${queues[@]}"; do
             case "$q" in
               R-devel | R-release | R-oldrelease) ;;
@@ -94,6 +98,7 @@ jobs:
                 ;;
             esac
           done
+          echo "queues=${queues[*]}" >> "$GITHUB_OUTPUT"
           if [ "$DRY_RUN" = true ]; then
             echo "::notice title=Dry run::Nothing is uploaded or commented in this run."
             printf '> [!NOTE]\n> **Dry run:** nothing is uploaded or commented.\n\n' >> "$GITHUB_STEP_SUMMARY"
@@ -182,7 +187,7 @@ jobs:
           builder: winbuilder
           tarball: ${{ steps.tarball.outputs.tarball }}
           commit: ${{ inputs.sha }}
-          flavors: ${{ inputs.queues || 'R-devel' }}
+          flavors: ${{ needs.version.outputs.queues }}
           dry-run: ${{ inputs.dry-run }}
 
   macbuilder:

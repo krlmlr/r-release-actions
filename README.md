@@ -208,7 +208,7 @@ Inputs:
 - `sha`, `dry-run`, `check-workflow` and `check-run-id`: as for the CRAN submission.
 - `queues`: the win-builder queues to upload to, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`;
   by default `R-devel`, which callers keep as a rule, passing the others only on purpose.
-  An empty value means `R-devel`, and a queue win-builder does not have fails the run in the **version** job, before any upload.
+  An empty or blank value means `R-devel`, and a queue win-builder does not have fails the run in the **version** job, before any upload.
 - `macbuilder-timeout-minutes`: how long to wait for macbuilder's result, by default 60 and at most 150.
 
 What a run does, job by job:

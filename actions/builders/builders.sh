@@ -191,7 +191,7 @@ cmd_winbuilder() {
     "- Uploaded as \`$uploaded\`, sha256 \`$sha\`: the same files, with commit \`${commit:0:10}\` encoded in \`Version:\`"
   output tarball "$uploaded"
 
-  local results='' failed='' url rc attempt
+  local results='' failed='' url rc attempt sent=()
   for f in "${flavors[@]}"; do
     url="$base_url/$f/$uploaded"
     if [ -n "$dry_run" ]; then
@@ -223,6 +223,7 @@ cmd_winbuilder() {
       say "Uploaded $uploaded to $url"
       summary "- $f: uploaded to $url"
       results+="$f=uploaded "
+      sent+=("$f")
     else
       failure "Win-builder" "The upload to win-builder failed" \
         "curl exited with status $rc uploading \`$uploaded\` to $url: $(head -n 1 "$work/ftp.err")" "$work/ftp.err" -- \
@@ -238,7 +239,7 @@ cmd_winbuilder() {
     notice "Dry run" "Nothing was sent to win-builder. A real run uploads $uploaded for ${flavors[*]}."
     return 0
   fi
-  [[ " $results" != *=uploaded\ * ]] || summary "" "Win-builder emails the results to $maint, usually within 30 minutes." ""
+  [ ${#sent[@]} -eq 0 ] || summary "" "Win-builder emails the results for ${sent[*]} to $maint, usually within 30 minutes." ""
   [ -z "$failed" ] || exit 1
   notice "Uploaded to win-builder" "$uploaded for ${flavors[*]}; the results arrive by email to the maintainer."
 }
