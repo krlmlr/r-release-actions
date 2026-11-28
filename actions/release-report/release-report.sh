@@ -45,7 +45,8 @@
 #   RESUBMIT, DRY_RUN    `submitted`: `true` lets a version submitted before through, or only warns about it
 #   RESULTS              `status`: one `<job>=<result>` per line, as `needs.<job>.result` gives it
 #   DETAILS              `status`: Markdown appended below the job results, may be empty
-#   WINBUILDER_RESULTS   `builders`: `<flavor>=<uploaded|failed|dry-run>`, separated by spaces; WINBUILDER_JOB its job's result
+#   WINBUILDER_RESULTS   `builders`: `<flavor>=<uploaded|failed|dry-run>`, separated by spaces; WINBUILDER_JOB its job's result;
+#                        WINBUILDER_TARBALL the uploaded file's name, whose version encodes the commit, may be empty
 #   MACBUILDER_FLAVOR, MACBUILDER_URL, MACBUILDER_OUTCOME, MACBUILDER_STATUS, MACBUILDER_JOB
 #                        `builders`: macbuilder's flavor, result page, outcome (`ok`, `note`, `warning`, `error`, `unknown`, `timeout`),
 #                        `Status:` line, and its job's result
@@ -122,7 +123,9 @@ cmd_builders() {
   { [[ $pr =~ ^[0-9]*$ ]] && valid_package "$pkg" && valid_version "$version"; } || usage
   [ -n "$pr" ] || [ "${DRY_RUN:-false}" = true ] || usage
   local marker="<!-- release-builders: $pkg $version -->" overall=success body
-  local wjob=${WINBUILDER_JOB:-} mjob=${MACBUILDER_JOB:-} flavor result line wlines='' mline
+  local wjob=${WINBUILDER_JOB:-} mjob=${MACBUILDER_JOB:-} flavor result line wlines='' mline wtar=''
+  # The file name comes from the job's output: only a name a tarball can have reaches the comment.
+  if [[ ${WINBUILDER_TARBALL:-} =~ ^[A-Za-z][A-Za-z0-9.]*_[0-9][0-9.-]*\.tar\.gz$ ]]; then wtar=" as \`$WINBUILDER_TARBALL\`"; fi
   body=$(mktemp)
   # shellcheck disable=SC2064  # expand now
   trap "rm -f '$body'" EXIT
@@ -130,8 +133,8 @@ cmd_builders() {
     result=${flavor#*=}
     flavor=${flavor%%=*}
     case "$result" in
-      uploaded) line="uploaded; the results arrive by email to the maintainer" ;;
-      dry-run) line="not uploaded on a dry run" ;;
+      uploaded) line="uploaded$wtar; the results arrive by email to the maintainer" ;;
+      dry-run) line="not uploaded on a dry run${wtar:+, a real run uploads it$wtar}" ;;
       failed) line="**upload failed**"; overall=failure ;;
       *) line="$result" ;;
     esac

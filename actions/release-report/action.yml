@@ -26,6 +26,9 @@ inputs:
   winbuilder-job:
     description: "`builders`: the win-builder job's result"
     default: ""
+  winbuilder-tarball:
+    description: "`builders`: the name of the file uploaded to win-builder, whose version encodes the commit"
+    default: ""
   macbuilder-flavor:
     description: "`builders`: macbuilder's flavor"
     default: ""
@@ -107,6 +110,7 @@ runs:
       env:
         WINBUILDER_RESULTS: ${{ inputs.winbuilder-results }}
         WINBUILDER_JOB: ${{ inputs.winbuilder-job }}
+        WINBUILDER_TARBALL: ${{ inputs.winbuilder-tarball }}
         MACBUILDER_FLAVOR: ${{ inputs.macbuilder-flavor }}
         MACBUILDER_URL: ${{ inputs.macbuilder-url }}
         MACBUILDER_OUTCOME: ${{ inputs.macbuilder-outcome }}

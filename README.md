@@ -178,8 +178,10 @@ Each step writes what it read, checked and did to the run's summary, with how to
 to win-builder and to macbuilder, and reports both on the checklist pull request.
 These checks inform the release and never gate it: the submission neither waits for them nor reads their results.
 Win-builder checks on the queues that `queues` names, R-devel by default, and macbuilder on R-devel only.
+Callers use R-devel as a rule, and the other win-builder queues only on purpose.
 The workflow takes the tarball exactly as the submission does, from a green check run of the commit,
-so what the builders check is the file that CRAN receives.
+so what the builders check is the file that CRAN receives,
+except for the version win-builder sees, which encodes the commit as described below.
 
 ```yaml
 on:
@@ -205,7 +207,8 @@ Inputs:
 
 - `sha`, `dry-run`, `check-workflow` and `check-run-id`: as for the CRAN submission.
 - `queues`: the win-builder queues to upload to, separated by spaces, of `R-devel`, `R-release` and `R-oldrelease`;
-  by default `R-devel`.
+  by default `R-devel`, which callers keep as a rule, passing the others only on purpose.
+  An empty or blank value means `R-devel`, and a queue win-builder does not have fails the run in the **version** job, before any upload.
 - `macbuilder-timeout-minutes`: how long to wait for macbuilder's result, by default 60 and at most 150.
 
 What a run does, job by job:
@@ -216,9 +219,10 @@ What a run does, job by job:
 - **tarball** finds the check run and its tarball artifact, and verifies the file, as the submission's job of that name does.
 - **winbuilder** uploads the tarball by anonymous FTP to `ftp://win-builder.r-project.org/<queue>/` for each queue in `queues`,
   as `devtools::check_win_devel()` does for `R-devel`, retrying a refused connection or an unresolved host twice.
-  It tries every queue, and fails after the others when one upload failed.
+  It tries every queue, and a failed upload fails the job after the others.
   Win-builder emails the results to the maintainer named in the tarball, usually within 30 minutes.
-  A failed upload fails the job.
+  The email names only the package and its version, so the file uploaded identifies the commit in its version,
+  as described after this list.
 - **macbuilder** posts the tarball to `https://mac.r-project.org/macbuilder/v1/submit` for `r-devel`,
   as `devtools::check_mac_devel()` does,
   and polls the result page it answers with, once a minute, until the page shows a finished check log or the wait ends.
@@ -231,6 +235,29 @@ What a run does, job by job:
 - **report**, on a real run with a checklist pull request that nobody cancelled, creates or updates the workflow's one comment there,
   marked `<!-- release-builders: <package> X.Y.Z -->`: each win-builder upload, and macbuilder's status with a link to its result page.
 - **preview**, on a dry run, shows that comment in the run's summary, with no permission.
+
+The file uploaded to win-builder, the same for every queue, is the checked tarball repacked with one change:
+the first six bytes of the commit, twelve hex digits, are appended to `Version:` in `DESCRIPTION` and to the file name
+as six components of one byte each, in decimal.
+Commit `c4a875c47d9c…` turns `fakepkg_1.0.1.tar.gz` into `fakepkg_1.0.1.196.168.117.196.125.156.tar.gz`,
+and a four-component release such as 1.4.2.1 keeps its four in front.
+Each component lies between 0 and 255, so `R CMD check --as-cran` reports neither "Version contains large components",
+which a component of 1234 or more triggers, nor "Version contains leading zeroes".
+The CRAN submission and macbuilder get the checked tarball unchanged.
+The builders' comment names the file uploaded.
+To find the commit from the version in win-builder's email, turn its last six components back into twelve hex digits, in bash:
+
+```bash
+v=1.0.1.196.168.117.196.125.156
+IFS=. read -r -a c <<<"$v"
+git rev-parse --verify "$(printf '%02x' "${c[@]: -6}")^{commit}"
+```
+
+Code that reads the package's own version, such as a test that compares `packageVersion()` with a fixed value,
+sees the longer version on win-builder only.
+
+The longer version is also greater than the checked one,
+so win-builder no longer reports "Insufficient package version" for a version that equals CRAN's.
 
 A dry run uploads nothing and writes nothing: it verifies the tarball, and reports the URLs and fields a real run would send.
 The calling job grants `actions: read` and `contents: read` to find and download the artifact,

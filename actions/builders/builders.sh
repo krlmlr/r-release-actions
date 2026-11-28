@@ -3,14 +3,19 @@
 # Upload a source tarball to win-builder and to macbuilder, and wait for macbuilder's result.
 # These checks inform the release and never gate it: a check result is reported, never turned into a failure.
 #
-#   winbuilder [--dry-run] <tarball> <flavor>...
+#   winbuilder [--dry-run] --commit <sha> <tarball> <flavor>...
 #     Upload the tarball by anonymous FTP to `<WINBUILDER_URL>/<flavor>/<file name>` for each flavor,
 #     `R-devel`, `R-release` or `R-oldrelease`, as `devtools:::submit_winbuilder_ftp()` and `upload_ftp()` do
 #     (devtools 2.5.2, R/check-win.R). Win-builder emails the results to the maintainer named in the tarball.
-#     A flavor given twice is uploaded once. Every flavor is tried, each with two retries on a failed connection only;
-#     any failed upload fails the stage after the others.
-#     Writes `results`, `<flavor>=<uploaded|failed|dry-run>` separated by spaces, to GITHUB_OUTPUT after each flavor,
-#     so that a job cancelled during a later upload still reports the earlier ones.
+#     Its email names only the package and the version, so the file uploaded is the tarball repacked
+#     with the commit's first six bytes appended to `Version:` in DESCRIPTION and to the file name,
+#     as six decimal components of one byte each: commit c4a875c47d9c... turns 1.0.1 into 1.0.1.196.168.117.196.125.156.
+#     No component reaches 1234 or has a leading zero, so `R CMD check --as-cran` adds no NOTE for the version;
+#     the README shows how to turn the six components back into the commit.
+#     Every flavor gets the same repacked file. A flavor given twice is uploaded once, and an unknown one fails before sending.
+#     Every flavor is tried, each with two retries on a failed connection only; any failed upload fails the stage after the others.
+#     Writes `tarball`, the uploaded file's name, and `results`, `<flavor>=<uploaded|failed|dry-run>` separated by spaces,
+#     to GITHUB_OUTPUT, the results after each flavor, so that a job cancelled during a later upload still reports the earlier ones.
 #   macbuilder [--dry-run] <tarball> <flavor>
 #     Post the tarball to MACBUILDER_URL as `devtools:::check_mac()` does (devtools 2.5.2, R/check-mac.R),
 #     which `check_mac_devel()` calls for `r-devel` and `check_mac_release()` for `r-release`:
@@ -56,7 +61,8 @@ usage() {
 }
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# A repacked tarball may hold read-only directories.
+trap 'chmod -R u+rwX "$work" || true; rm -rf "$work"' EXIT
 
 # Sets pkg, version, maint, base and sha from a tarball named `<package>_<version>.tar.gz`
 # whose DESCRIPTION holds that package and version, or fails.
@@ -87,13 +93,60 @@ read_tarball() { # <tarball> <stage>
 
 # --- win-builder ----------------------------------------------------------
 
+# The commit's first six bytes as six version components, 0 to 255 in decimal, separated by dots.
+commit_components() { # <sha>
+  printf '%d.%d.%d.%d.%d.%d' "0x${1:0:2}" "0x${1:2:2}" "0x${1:4:2}" "0x${1:6:2}" "0x${1:8:2}" "0x${1:10:2}"
+}
+
+# Sets upload to the tarball <tarball> repacked as `<package>_<version>.tar.gz` with `Version: <version>` in DESCRIPTION,
+# its only change; read_tarball has set pkg and base.
+repack() { # <tarball> <version> <stage>
+  local tarball=$1 version=$2 stage=$3 dir=$work/repack
+  mkdir -p "$dir/src" "$dir/out"
+  # `R CMD build` puts everything under `<package>/`; anything else would be lost in the repack.
+  if ! tar -tzf "$tarball" >"$work/members" 2>"$work/tar.err"; then
+    fail "$stage" "The tarball cannot be repacked" "\`$base\` cannot be listed." "$work/tar.err" -- \
+      "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
+  fi
+  awk -v p="$pkg/" 'index($0, p) != 1 { print; if (++n == 20) exit }' "$work/members" >"$work/outside"
+  if [ -s "$work/outside" ]; then
+    fail "$stage" "The tarball cannot be repacked" "\`$base\` holds files outside \`$pkg/\`, which the repack would lose." "$work/outside" -- \
+      "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
+  fi
+  if ! tar -xpzf "$tarball" -C "$dir/src" 2>"$work/tar.err"; then
+    fail "$stage" "The tarball cannot be repacked" "\`$base\` cannot be extracted." "$work/tar.err" -- \
+      "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
+  fi
+  # Only the first `Version:` line changes, and keeps a carriage return it ends in.
+  # DESCRIPTION is written in place, so that its directory keeps its time, and keeps its own mode and time.
+  local desc=$dir/src/$pkg/DESCRIPTION ro=''
+  [ -w "$desc" ] || ro=1
+  { awk -v v="$version" '!done && /^Version:/ { print "Version: " v ($0 ~ /\r$/ ? "\r" : ""); done = 1; next } { print }' \
+      "$desc" >"$dir/DESCRIPTION" &&
+    touch -r "$desc" "$dir/DESCRIPTION" &&
+    { [ -z "$ro" ] || chmod u+w "$desc"; } &&
+    cat "$dir/DESCRIPTION" >"$desc" &&
+    { [ -z "$ro" ] || chmod u-w "$desc"; } &&
+    touch -r "$dir/DESCRIPTION" "$desc"; } 2>"$work/tar.err" ||
+    fail "$stage" "The tarball cannot be repacked" "\`$base\`'s DESCRIPTION cannot be rewritten." "$work/tar.err" -- \
+      "Compare the tarball's file modes with what \`R CMD build\` writes."
+  [ "$(dcf_field Version "$dir/src/$pkg/DESCRIPTION")" = "$version" ] ||
+    fail "$stage" "The tarball cannot be repacked" "\`Version:\` in \`$base\`'s DESCRIPTION could not be set to $version." -- \
+      "Compare DESCRIPTION with what \`R CMD build\` writes."
+  upload=$dir/out/${pkg}_$version.tar.gz
+  tar -czf "$upload" -C "$dir/src" "$pkg" 2>"$work/tar.err" ||
+    fail "$stage" "The tarball cannot be repacked" "\`${pkg}_$version.tar.gz\` cannot be written." "$work/tar.err" -- \
+      "Check the runner's disk space, then dispatch this workflow again."
+}
+
 cmd_winbuilder() {
-  local dry_run='' tarball='' flavors=() f
+  local dry_run='' commit='' tarball='' flavors=() f
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) dry_run=1 ;;
+      --commit) [ $# -ge 2 ] || usage; commit=$2; shift ;;
       -*) usage ;;
-      *) if [ -z "$tarball" ]; then tarball=$1; else flavors+=("$1"); fi ;;
+      *) if [ -z "$tarball" ]; then tarball=$1; elif [ -n "$1" ]; then flavors+=("$1"); fi ;;
     esac
     shift
   done
@@ -115,21 +168,33 @@ cmd_winbuilder() {
         "Pass win-builder's flavors as its upload directories name them." ;;
     esac
   done
-  local base_url=${WINBUILDER_URL:-ftp://win-builder.r-project.org}
+  valid_sha "$commit" ||
+    fail "Win-builder" "No commit SHA" "The commit given is no full 40-character commit SHA." -- \
+      "Pass the commit the tarball was built from in the action's \`commit\` input."
+  local base_url=${WINBUILDER_URL:-ftp://win-builder.r-project.org} upload uploaded checked
   read_tarball "$tarball" "Win-builder"
-  group "Win-builder: $base"
-  val "tarball" "$base"
+  checked=$sha
+  repack "$tarball" "$version.$(commit_components "$commit")" "Win-builder"
+  uploaded=$(basename "$upload")
+  sha=$(sha256_of "$upload")
+  group "Win-builder: $uploaded"
+  val "checked tarball" "$base"
+  val "sha256" "$checked"
+  val "commit" "$commit"
+  val "uploaded as" "$uploaded"
   val "sha256" "$sha"
   val "maintainer" "$maint"
   val "flavors" "${flavors[*]}"
   endgroup
-  summary "### Win-builder${dry_run:+: dry run}" "" "- Tarball: \`$base\`, sha256 \`$sha\`"
+  summary "### Win-builder${dry_run:+: dry run}" "" "- Tarball: \`$base\`, sha256 \`$checked\`" \
+    "- Uploaded as \`$uploaded\`, sha256 \`$sha\`: the same files, with commit \`${commit:0:12}\` encoded in \`Version:\`"
+  output tarball "$uploaded"
 
-  local results='' failed='' url rc
+  local results='' failed='' url rc attempt sent=()
   for f in "${flavors[@]}"; do
-    url="$base_url/$f/$base"
+    url="$base_url/$f/$uploaded"
     if [ -n "$dry_run" ]; then
-      say "Dry run: would upload $base to $url"
+      say "Dry run: would upload $uploaded to $url"
       summary "- $f: would upload to $url"
       results+="$f=dry-run "
       output results "${results% }"
@@ -141,11 +206,10 @@ cmd_winbuilder() {
     # at most three attempts of five minutes each, which the workflow's job timeout covers for three flavors.
     # Only a failed connection (curl's 6 and 7) is retried: after any other error, such as a timeout (28),
     # part of the file may have arrived, and a retry would send it again under the same name.
-    local attempt
     for attempt in 1 2 3; do
       rc=0
       curl --silent --show-error --connect-timeout 30 --max-time "${WINBUILDER_MAX_TIME:-300}" \
-        --upload-file "$tarball" "$url" >"$work/ftp.out" 2>"$work/ftp.err" || rc=$?
+        --upload-file "$upload" "$url" >"$work/ftp.out" 2>"$work/ftp.err" || rc=$?
       case "$rc" in
         6 | 7) [ "$attempt" -lt 3 ] || break ;;
         *) break ;;
@@ -155,12 +219,13 @@ cmd_winbuilder() {
     done
     endgroup
     if [ "$rc" -eq 0 ]; then
-      say "Uploaded $base to $url"
+      say "Uploaded $uploaded to $url"
       summary "- $f: uploaded to $url"
       results+="$f=uploaded "
+      sent+=("$f")
     else
       failure "Win-builder" "The upload to win-builder failed" \
-        "curl exited with status $rc uploading \`$base\` to $url: $(head -n 1 "$work/ftp.err")" "$work/ftp.err" -- \
+        "curl exited with status $rc uploading \`$uploaded\` to $url: $(head -n 1 "$work/ftp.err")" "$work/ftp.err" -- \
         "Check win-builder's status at https://win-builder.r-project.org/, then dispatch this workflow again." \
         "Win-builder checks inform the release and do not gate it; the CRAN submission does not wait for them."
       results+="$f=failed "
@@ -170,12 +235,13 @@ cmd_winbuilder() {
   done
   if [ -n "$dry_run" ]; then
     summary "" "Nothing was sent. A real run uploads the file by anonymous FTP; win-builder emails the results to $maint." ""
-    notice "Dry run" "Nothing was sent to win-builder. A real run uploads $base for ${flavors[*]}."
+    notice "Dry run" "Nothing was sent to win-builder. A real run uploads $uploaded for ${flavors[*]}."
     return 0
   fi
-  summary "" "Win-builder emails the results to $maint, usually within 30 minutes." ""
+  local names="${sent[*]:-}"
+  [ ${#sent[@]} -eq 0 ] || summary "" "Win-builder emails the results for ${names// /, } to $maint, usually within 30 minutes." ""
   [ -z "$failed" ] || exit 1
-  notice "Uploaded to win-builder" "$base for ${flavors[*]}; the results arrive by email to the maintainer."
+  notice "Uploaded to win-builder" "$uploaded for ${flavors[*]}; the results arrive by email to the maintainer."
 }
 
 # --- macbuilder -----------------------------------------------------------
