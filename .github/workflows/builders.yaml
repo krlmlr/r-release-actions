@@ -84,7 +84,7 @@ jobs:
           fi
           read -r -d '' -a queues <<<"$QUEUES" || true
           if [ ${#queues[@]} -gt 1 ] || [ "${queues[0]:-R-devel}" != R-devel ]; then
-            echo "::error title=Win-builder checks on R-devel only::The input queues is not R-devel. Win-builder checks on R-devel only, as macbuilder does, and queues is deprecated: drop it from the calling workflow, or pass R-devel."
+            echo "::error title=Win-builder checks on R-devel only::The input queues, printed in this step's log, is not R-devel. Win-builder checks on R-devel only, as macbuilder does, and queues is deprecated: drop it from the calling workflow, or pass R-devel."
             printf 'queues: %q\n' "$QUEUES"
             exit 1
           fi

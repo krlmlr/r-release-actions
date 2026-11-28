@@ -59,7 +59,8 @@ usage() {
 }
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# A repacked tarball may hold read-only directories.
+trap 'chmod -R u+w "$work" || true; rm -rf "$work"' EXIT
 
 # Sets pkg, version, maint, base and sha from a tarball named `<package>_<version>.tar.gz`
 # whose DESCRIPTION holds that package and version, or fails.
@@ -102,21 +103,30 @@ repack() { # <tarball> <version> <stage>
   local tarball=$1 version=$2 stage=$3 dir=$work/repack
   mkdir -p "$dir/src" "$dir/out"
   # `R CMD build` puts everything under `<package>/`; anything else would be lost in the repack.
-  if ! tar -tzf "$tarball" >"$work/members" 2>"$work/tar.err" || grep -qv "^$pkg/" "$work/members"; then
-    grep -v "^$pkg/" "$work/members" | head -n 20 >>"$work/tar.err" || true
-    fail "$stage" "The tarball cannot be repacked" "\`$base\` cannot be listed, or holds files outside \`$pkg/\`." "$work/tar.err" -- \
+  if ! tar -tzf "$tarball" >"$work/members" 2>"$work/tar.err"; then
+    fail "$stage" "The tarball cannot be repacked" "\`$base\` cannot be listed." "$work/tar.err" -- \
       "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
   fi
-  if ! tar -xzf "$tarball" -C "$dir/src" 2>"$work/tar.err"; then
+  awk -v p="$pkg/" 'index($0, p) != 1' "$work/members" | head -n 20 >"$work/outside"
+  if [ -s "$work/outside" ]; then
+    fail "$stage" "The tarball cannot be repacked" "\`$base\` holds files outside \`$pkg/\`, which the repack would lose." "$work/outside" -- \
+      "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
+  fi
+  if ! tar -xpzf "$tarball" -C "$dir/src" 2>"$work/tar.err"; then
     fail "$stage" "The tarball cannot be repacked" "\`$base\` cannot be extracted." "$work/tar.err" -- \
       "Upload the tarball the check workflow built and kept as an artifact, which the checked-tarball action verifies."
   fi
   # Only the first `Version:` line changes, and keeps a carriage return it ends in.
-  { awk -v v="$version" '!done && /^Version:/ { print "Version: " v ($0 ~ /\r$/ ? "\r" : ""); done = 1; next } { print }' \
-    "$dir/src/$pkg/DESCRIPTION" >"$dir/DESCRIPTION" &&
-    touch -r "$dir/src/$pkg/DESCRIPTION" "$dir/DESCRIPTION" &&
-    cat "$dir/DESCRIPTION" >"$dir/src/$pkg/DESCRIPTION" &&
-    touch -r "$dir/DESCRIPTION" "$dir/src/$pkg/DESCRIPTION"; } 2>"$work/tar.err" ||
+  # DESCRIPTION is written in place, so that its directory keeps its time, and keeps its own mode and time.
+  local desc=$dir/src/$pkg/DESCRIPTION mode
+  { mode=$(stat -c %a "$desc") &&
+    awk -v v="$version" '!done && /^Version:/ { print "Version: " v ($0 ~ /\r$/ ? "\r" : ""); done = 1; next } { print }' \
+      "$desc" >"$dir/DESCRIPTION" &&
+    touch -r "$desc" "$dir/DESCRIPTION" &&
+    chmod u+w "$desc" &&
+    cat "$dir/DESCRIPTION" >"$desc" &&
+    chmod "$mode" "$desc" &&
+    touch -r "$dir/DESCRIPTION" "$desc"; } 2>"$work/tar.err" ||
     fail "$stage" "The tarball cannot be repacked" "\`$base\`'s DESCRIPTION cannot be rewritten." "$work/tar.err" -- \
       "Compare the tarball's file modes with what \`R CMD build\` writes."
   [ "$(dcf_field Version "$dir/src/$pkg/DESCRIPTION")" = "$version" ] ||
@@ -135,7 +145,7 @@ cmd_winbuilder() {
       --dry-run) dry_run=1 ;;
       --commit) [ $# -ge 2 ] || usage; commit=$2; shift ;;
       -*) usage ;;
-      *) if [ -z "$tarball" ]; then tarball=$1; else flavors+=("$1"); fi ;;
+      *) if [ -z "$tarball" ]; then tarball=$1; elif [ -n "$1" ]; then flavors+=("$1"); fi ;;
     esac
     shift
   done

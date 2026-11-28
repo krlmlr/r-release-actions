@@ -332,11 +332,13 @@ section "winbuilder repacks the tarball with the commit in its version"
 mkdir -p "$SCRATCH/x/checked" "$SCRATCH/x/uploaded"
 tar -xzf "$TARBALL" -C "$SCRATCH/x/checked"
 tar -xzf "$SCRATCH/stored/R-devel/$UPLOADED" -C "$SCRATCH/x/uploaded"
-listing() { tar -tvzf "$1" | awk '{ print $1, $3, $4, $5, $6 }' | sed "s#$2#V#" | sort; }
+# Mode, size, date, time and name of each member, the directory's own entry aside, which an archive need not hold.
+listing() { tar -tvzf "$1" | awk '$6 != "fakepkg/" { print $1, $3, $4, $5, $6 }' | sort; }
 is "the same files, modes, sizes and times but DESCRIPTION's size" \
   "$(listing "$SCRATCH/stored/R-devel/$UPLOADED" | grep -v DESCRIPTION)" "$(listing "$TARBALL" | grep -v DESCRIPTION)"
+is "which are there" "$(listing "$TARBALL" | grep -c ' 2026-01-02 03:04 ')" 4
 is "and DESCRIPTION keeps its mode and time" "$(listing "$SCRATCH/stored/R-devel/$UPLOADED" | grep DESCRIPTION | cut -d' ' -f1,3,4)" \
-  "$(listing "$TARBALL" | grep DESCRIPTION | cut -d' ' -f1,3,4)"
+  "-rw-r--r-- 2026-01-02 03:04"
 is "an executable stays executable" "$(tar -tvzf "$SCRATCH/stored/R-devel/$UPLOADED" | awk '/configure$/ { print $1 }')" "-rwxr-xr-x"
 is "the same contents but DESCRIPTION" "$(diff -r -x DESCRIPTION "$SCRATCH/x/checked" "$SCRATCH/x/uploaded" && echo same)" same
 is "DESCRIPTION differs in the Version field only" \
@@ -375,15 +377,20 @@ mkdir -p "$SCRATCH/pkgcr/fakepkg"
 printf 'Package: fakepkg\r\nVersion: 1.0.1\r\nMaintainer: Jane Doe <jane@example.org>\r\n' >"$SCRATCH/pkgcr/fakepkg/DESCRIPTION"
 tar -czf "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" -C "$SCRATCH/pkgcr" fakepkg
 out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" R-devel)
-is "a DESCRIPTION with CRLF line ends keeps them" "$(tar -xzOf "$SCRATCH/stored/R-devel/$UPLOADED" fakepkg/DESCRIPTION | od -c | tr -s ' ' | head -n 3)" \
-  "$(printf 'Package: fakepkg\r\nVersion: 1.0.1.786.647.369.125\r\nMaintainer: Jane Doe <jane@example.org>\r\n' | od -c | tr -s ' ' | head -n 3)"
+is "a DESCRIPTION with CRLF line ends keeps them" "$(tar -xzOf "$SCRATCH/stored/R-devel/$UPLOADED" fakepkg/DESCRIPTION | od -c)" \
+  "$(printf 'Package: fakepkg\r\nVersion: 1.0.1.786.647.369.125\r\nMaintainer: Jane Doe <jane@example.org>\r\n' | od -c)"
+chmod 444 "$SCRATCH/pkgcr/fakepkg/DESCRIPTION"
+tar -czf "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" -C "$SCRATCH/pkgcr" fakepkg
+out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkgcr/fakepkg_1.0.1.tar.gz" R-devel)
+is "a read-only DESCRIPTION is repacked, and stays read-only" "$(tar -tvzf "$SCRATCH/stored/R-devel/$UPLOADED" | awk '/DESCRIPTION$/ { print $1 }')" \
+  "-r--r--r--"
 mkdir -p "$SCRATCH/pkgx/fakepkg"
 cp "$SCRATCH/pkg/fakepkg/DESCRIPTION" "$SCRATCH/pkgx/fakepkg/"
 touch "$SCRATCH/pkgx/extra"
 tar -czf "$SCRATCH/pkgx/fakepkg_1.0.1.tar.gz" -C "$SCRATCH/pkgx" fakepkg extra
 out=$(run winbuilder --commit "$COMMIT" "$SCRATCH/pkgx/fakepkg_1.0.1.tar.gz" R-devel)
 has "a tarball with files outside the package's directory fails" "$out" \
-  "::error title=The tarball cannot be repacked::\`fakepkg_1.0.1.tar.gz\` cannot be listed, or holds files outside \`fakepkg/\`."
+  "::error title=The tarball cannot be repacked::\`fakepkg_1.0.1.tar.gz\` holds files outside \`fakepkg/\`"
 has "naming them in the summary" "$(cat "$SUMMARY")" "extra"
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 
@@ -404,8 +411,9 @@ has "a second flavor fails, naming both" "$out" "::error title=No win-builder fl
 is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" "R-devel ")
 has "a flavor with a space is none" "$out" "::error title=No win-builder flavor::"
+is "and sends nothing" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(run winbuilder --commit "$COMMIT" "$TARBALL" "")
-has "nor is an empty one" "$out" "::error title=No win-builder flavor::"
+has "an empty one is no flavor" "$out" "::error title=No win-builder flavor::No flavor was given."
 is "and nothing is sent" "$(cat "$SCRATCH/ftp-requests")" ""
 out=$(WINBUILDER_URL=ftp://127.0.0.1:1 run winbuilder --commit "$COMMIT" "$TARBALL" R-devel)
 has "an unreachable server fails" "$out" "exit 1"
