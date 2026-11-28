@@ -354,6 +354,9 @@ is "DESCRIPTION differs in the Version field only" \
 < Version: 1.0.1
 ---
 > Version: 1.0.1.196.168.117.196.125.156"
+# shellcheck disable=SC2016  # the README's lines, verbatim
+is "the README carries that decoding" \
+  "$(grep -cxF -e 'IFS=. read -r -a c <<<"$v"' -e 'git rev-parse --verify "$(printf '"'"'%02x'"'"' "${c[@]: -6}")^{commit}"' "$HERE/../../README.md")" 2
 is "the README's decoding gives back the commit's first twelve hex digits" "$(decode 1.0.1.196.168.117.196.125.156)" "${COMMIT:0:12}"
 for c in 000000000000 ffffffffffff 00a01b2c3d4e 0123456789ab 090a0f10ff00; do
   sha=${c}$(printf '0%.0s' $(seq 28))
